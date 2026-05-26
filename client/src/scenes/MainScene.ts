@@ -92,6 +92,7 @@ export class MainScene extends Phaser.Scene {
   private chatLogText!: Phaser.GameObjects.Text;
   private chatLog: string[] = [];
   private bakedTextureCounter = 0;
+  private ready = false;
 
   constructor() {
     super("MainScene");
@@ -185,9 +186,11 @@ export class MainScene extends Phaser.Scene {
 
     this.lastSentX = this.player.x;
     this.lastSentY = this.player.y;
+    this.ready = true;
   }
 
   update(time: number) {
+    if (!this.ready) return;
     let vx = 0;
     let vy = 0;
     if (this.cursors.left?.isDown || this.wasd.left.isDown) vx -= 1;
