@@ -117,7 +117,7 @@ export class MainScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
-    this.cameras.main.startFollow(this.player, true, 0.15, 0.15);
+    this.cameras.main.startFollow(this.player, true, 1, 1);
     this.cameras.main.setZoom(2);
     this.cameras.main.setRoundPixels(true);
 
@@ -194,12 +194,16 @@ export class MainScene extends Phaser.Scene {
     moving: boolean
   ) {
     if (moving && dir === 0) {
-      sprite.play("walk_south", true);
+      if (sprite.anims.currentAnim?.key !== "walk_south") {
+        sprite.play("walk_south", true);
+      }
       return;
     }
     if (sprite.anims.isPlaying) sprite.anims.stop();
     const idleFrame = IDLE_FRAME_BY_DIR[dir] ?? 0;
-    sprite.setTexture("player_idle", idleFrame);
+    if (sprite.texture.key !== "player_idle" || sprite.frame.name !== String(idleFrame)) {
+      sprite.setTexture("player_idle", idleFrame);
+    }
   }
 
   private maybeSendMove(time: number, moving: boolean) {
@@ -468,6 +472,7 @@ export class MainScene extends Phaser.Scene {
     const trees = this.physics.add.staticGroup();
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
+    const SCALE = 1.5;
     for (let i = 0; i < 90; i++) {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
@@ -477,8 +482,9 @@ export class MainScene extends Phaser.Scene {
       const wy = ty * TILE + TILE / 2;
       const tree = trees.create(wx, wy, "tinytown", idx) as Phaser.Physics.Arcade.Sprite;
       tree.setOrigin(0.5, 0.85);
+      tree.setScale(SCALE);
       const body = tree.body as Phaser.Physics.Arcade.StaticBody;
-      body.setSize(18, 10).setOffset(7, 18);
+      body.setSize(14, 8).setOffset(9, 20);
       tree.refreshBody();
       tree.setDepth(wy);
     }
