@@ -68,7 +68,7 @@ interface LabelStyle {
   fontFamily?: string;
 }
 
-const LABEL_FONT_FAMILY = "Galmuri11Bitmap, Galmuri11, monospace";
+const LABEL_FONT_FAMILY = "Galmuri11, monospace";
 
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -120,13 +120,13 @@ export class MainScene extends Phaser.Scene {
   async create() {
     this.playerName = pickName();
 
-    // Block on font load so canvas-baked labels render with Galmuri11Bitmap
-    // from the start; without this, the first labels would bake with the
-    // fallback monospace font and only swap in after the font loads.
+    // Block on font load so canvas-baked labels render with Galmuri11 from
+    // the start; without this, the first labels would bake with the fallback
+    // monospace font and only swap in after the font loads.
     try {
-      await document.fonts.load("11px Galmuri11Bitmap");
+      await document.fonts.load("11px Galmuri11");
     } catch {
-      // ignore — caller will fall back to outline Galmuri11 or monospace
+      // ignore — caller will fall back to monospace
     }
 
     this.buildGroundLayer();
@@ -148,7 +148,7 @@ export class MainScene extends Phaser.Scene {
       fontSize: 11,
     });
     this.nameTag = this.add
-      .image(spawnX, spawnY + 10, nameTagKey)
+      .image(spawnX, spawnY - 5, nameTagKey)
       .setOrigin(0.5, 0)
       .setDepth(100000);
 
@@ -213,7 +213,7 @@ export class MainScene extends Phaser.Scene {
     // No Math.round here — camera.setRoundPixels(true) handles screen snapping.
     // Rounding world coords causes 1px jumps that don't align with camera scrolling,
     // which is what produced the nameplate jitter.
-    this.nameTag.setPosition(this.player.x, this.player.y + 10);
+    this.nameTag.setPosition(this.player.x, this.player.y - 5);
 
     const moving = vx !== 0 || vy !== 0;
     this.applyPlayerAnimation(this.player, this.dir, moving);
@@ -289,7 +289,7 @@ export class MainScene extends Phaser.Scene {
       ent.sprite.x = Phaser.Math.Linear(ent.sprite.x, p.x, lerp);
       ent.sprite.y = Phaser.Math.Linear(ent.sprite.y, p.y, lerp);
       ent.sprite.setDepth(ent.sprite.y);
-      ent.nameTag.setPosition(ent.sprite.x, ent.sprite.y + 10);
+      ent.nameTag.setPosition(ent.sprite.x, ent.sprite.y - 5);
       ent.nameTag.setDepth(ent.sprite.y + 1);
       this.applyPlayerAnimation(ent.sprite, p.dir | 0, !!p.moving);
       if (ent.chatBubble) {
@@ -311,7 +311,7 @@ export class MainScene extends Phaser.Scene {
       fontSize: 11,
     });
     const nameTag = this.add
-      .image(p.x, p.y + 10, nameTagKey)
+      .image(p.x, p.y - 5, nameTagKey)
       .setOrigin(0.5, 0)
       .setDepth(p.y + 1);
     this.remotes.set(sid, { sprite, nameTag, name: p.name });
@@ -527,15 +527,14 @@ export class MainScene extends Phaser.Scene {
     });
 
     // Threshold both alpha AND color to remove ClearType subpixel anti-aliasing
-    // that canvas font rendering bakes into the texture. Each pixel is forced
-    // to be fully opaque pure white (text) / pure black (stroke) or fully
-    // transparent — no grays, no color fringing. That's what was creating the
-    // "ghost" copies of the text visible when photographing the screen.
+    // that canvas font rendering bakes into the texture. Threshold is kept
+    // low (alpha 16) so we don't wipe out the thin text strokes — alpha 96
+    // was too aggressive and erased the visible glyph body for thin fonts.
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
       const alpha = data[i + 3];
-      if (alpha < 96) {
+      if (alpha < 16) {
         data[i] = 0;
         data[i + 1] = 0;
         data[i + 2] = 0;
