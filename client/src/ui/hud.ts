@@ -3,8 +3,46 @@ import type { ItemDef } from "../game/items";
 
 export interface Hud {
   root: HTMLElement;
+  minimap: Minimap;
   destroy(): void;
 }
+
+export interface MinimapZone {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: string;
+}
+
+export interface MinimapBuilding {
+  x: number;
+  y: number;
+}
+
+export interface MinimapUpdate {
+  worldW: number;
+  worldH: number;
+  playerX: number;
+  playerY: number;
+  zones?: MinimapZone[];
+  buildings?: MinimapBuilding[];
+  forEachResource: (cb: (x: number, y: number, type: string) => void) => void;
+}
+
+export interface Minimap {
+  update(args: MinimapUpdate): void;
+}
+
+const MINIMAP_SIZE = 120;
+const MINIMAP_THROTTLE_MS = 100;
+const RESOURCE_DOT_COLORS: Record<string, string> = {
+  tree: "#2d7a3a",
+  rock: "#6b6b6b",
+  copper_node: "#c87f33",
+  silver_node: "#dcdcdc",
+  gold_node: "#f5cc3a",
+};
 
 export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
   const root = document.createElement("div");
@@ -31,6 +69,61 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
   inventoryHint.className = "aurora-inventory-hint";
   inventoryHint.textContent = "[I] 닫기  ·  [1-8] 핫바 선택";
   inventoryEl.appendChild(inventoryHint);
+
+  const minimapCanvas = document.createElement("canvas");
+  minimapCanvas.className = "aurora-minimap";
+  minimapCanvas.width = MINIMAP_SIZE;
+  minimapCanvas.height = MINIMAP_SIZE;
+  root.appendChild(minimapCanvas);
+  const mctx = minimapCanvas.getContext("2d");
+  let minimapLastDraw = 0;
+
+  const minimap: Minimap = {
+    update({ worldW, worldH, playerX, playerY, zones, buildings, forEachResource }) {
+      if (!mctx) return;
+      const now = performance.now();
+      if (now - minimapLastDraw < MINIMAP_THROTTLE_MS) return;
+      minimapLastDraw = now;
+
+      const sx = MINIMAP_SIZE / worldW;
+      const sy = MINIMAP_SIZE / worldH;
+
+      if (zones && zones.length > 0) {
+        for (const z of zones) {
+          mctx.fillStyle = z.color;
+          mctx.fillRect(
+            Math.floor(z.x * sx),
+            Math.floor(z.y * sy),
+            Math.ceil(z.w * sx),
+            Math.ceil(z.h * sy),
+          );
+        }
+      } else {
+        mctx.fillStyle = "#8caf5e";
+        mctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+      }
+
+      forEachResource((x, y, type) => {
+        mctx.fillStyle = RESOURCE_DOT_COLORS[type] ?? "#ffffff";
+        mctx.fillRect(Math.floor(x * sx) - 1, Math.floor(y * sy) - 1, 2, 2);
+      });
+
+      if (buildings) {
+        mctx.fillStyle = "#5a2a0e";
+        for (const b of buildings) {
+          mctx.fillRect(Math.floor(b.x * sx) - 2, Math.floor(b.y * sy) - 2, 5, 5);
+        }
+      }
+
+      mctx.fillStyle = "#ff3a3a";
+      mctx.fillRect(
+        Math.floor(playerX * sx) - 2,
+        Math.floor(playerY * sy) - 2,
+        4,
+        4,
+      );
+    },
+  };
 
   const hotbarSlots: HTMLElement[] = [];
   for (let i = 0; i < HOTBAR_SLOTS; i++) {
@@ -142,6 +235,7 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
 
   return {
     root,
+    minimap,
     destroy() {
       offInv();
       offHot();

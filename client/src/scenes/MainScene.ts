@@ -10,6 +10,7 @@ import {
   type ResourceType,
 } from "../game/items";
 import type { Hotbar, Inventory } from "../game/inventory";
+import type { Hud, MinimapZone } from "../ui/hud";
 
 const TILE = 32;
 const MAP_W = 50;
@@ -18,6 +19,11 @@ const WORLD_W = MAP_W * TILE;
 const WORLD_H = MAP_H * TILE;
 const PLAYER_SPEED = 140;
 const RUN_SPEED = 230;
+
+// Map zones (3-way horizontal split). Farm = west, village = center, logging = east.
+const ZONE_FARM_X_MAX = Math.floor(MAP_W / 3);          // 0..16 = farm
+const ZONE_VILLAGE_X_MAX = Math.floor((MAP_W * 2) / 3); // 17..33 = village
+// 34..49 = logging
 const INV_SQRT2 = 1 / Math.SQRT2;
 
 const SEND_INTERVAL_MS = 80;
@@ -71,6 +77,20 @@ const ORE_NODES: Array<{ type: ResourceType; textureKey: string; count: number }
   { type: "gold_node", textureKey: "node_gold", count: 3 },
 ];
 
+// Village buildings (top-down 3/4 perspective). Each is placed once.
+interface BuildingSpec {
+  key: string;          // texture key
+  tx: number;           // tile x (top-left anchor relative to origin)
+  ty: number;           // tile y
+  npcKey?: string;      // optional NPC sprite placed just below the door
+  npcName: string;      // display name above NPC
+}
+const BUILDINGS: BuildingSpec[] = [
+  { key: "bldg_town_hall", tx: 24, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨" },
+  { key: "bldg_store",     tx: 21, ty: 30, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨"  },
+  { key: "bldg_blacksmith",tx: 28, ty: 30, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨" },
+];
+
 interface RemoteEntity {
   sprite: Phaser.GameObjects.Sprite;
   nameTag: Phaser.GameObjects.Image;
@@ -116,6 +136,23 @@ export class MainScene extends Phaser.Scene {
   private bakedTextureCounter = 0;
   private ready = false;
   private swinging = false;
+  private minimapZones: MinimapZone[] = [
+    { x: 0, y: 0, w: ZONE_FARM_X_MAX * TILE, h: WORLD_H, color: "#c2b07d" },
+    {
+      x: ZONE_FARM_X_MAX * TILE,
+      y: 0,
+      w: (ZONE_VILLAGE_X_MAX - ZONE_FARM_X_MAX) * TILE,
+      h: WORLD_H,
+      color: "#a89c8a",
+    },
+    {
+      x: ZONE_VILLAGE_X_MAX * TILE,
+      y: 0,
+      w: WORLD_W - ZONE_VILLAGE_X_MAX * TILE,
+      h: WORLD_H,
+      color: "#4d7a3a",
+    },
+  ];
 
   constructor() {
     super("MainScene");
@@ -148,6 +185,14 @@ export class MainScene extends Phaser.Scene {
     for (const ore of ORE_NODES) {
       this.load.image(ore.textureKey, `/assets/props/${ore.textureKey}.png`);
     }
+    // Village buildings
+    this.load.image("bldg_town_hall", "/assets/buildings/town_hall.png");
+    this.load.image("bldg_store", "/assets/buildings/store.png");
+    this.load.image("bldg_blacksmith", "/assets/buildings/blacksmith.png");
+    // NPC south-facing idles (full 8-direction support can be added later)
+    this.load.image("npc_chief_lee", "/assets/npcs/chief_lee.png");
+    this.load.image("npc_mrs_lee", "/assets/npcs/mrs_lee.png");
+    this.load.image("npc_blacksmith_roh", "/assets/npcs/blacksmith_roh.png");
     for (const tool of CHOP_TOOLS) {
       this.load.spritesheet(`player_chop_${tool}`, `/assets/characters/player_chop_${tool}.png`, {
         frameWidth: PLAYER_FRAME,
@@ -180,6 +225,7 @@ export class MainScene extends Phaser.Scene {
     this.buildGroundLayer();
     this.buildDecorations();
     this.harvestables = this.buildHarvestables();
+    this.buildVillage();
     this.createPlayerAnimations();
 
     const spawnX = WORLD_W / 2;
@@ -238,6 +284,7 @@ export class MainScene extends Phaser.Scene {
       this.nameTag.setPosition(this.player.x, this.player.y - 5);
       this.syncRemotes();
       this.maybeSendMove(time, false);
+      this.updateMinimap();
       return;
     }
     let vx = 0;
@@ -272,6 +319,30 @@ export class MainScene extends Phaser.Scene {
 
     this.syncRemotes();
     this.maybeSendMove(time, moving);
+    this.updateMinimap();
+  }
+
+  private updateMinimap() {
+    const hud = this.registry.get("hud") as Hud | undefined;
+    if (!hud) return;
+    hud.minimap.update({
+      worldW: WORLD_W,
+      worldH: WORLD_H,
+      playerX: this.player.x,
+      playerY: this.player.y,
+      zones: this.minimapZones,
+      buildings: BUILDINGS.map((b) => ({
+        x: b.tx * TILE + TILE / 2,
+        y: b.ty * TILE + TILE / 2,
+      })),
+      forEachResource: (cb) => {
+        for (const obj of this.harvestables.getChildren()) {
+          const sprite = obj as Phaser.GameObjects.Sprite;
+          if (!sprite.active || !sprite.visible) continue;
+          cb(sprite.x, sprite.y, sprite.getData("resourceType") as string);
+        }
+      },
+    });
   }
 
   private createPlayerAnimations() {
@@ -672,6 +743,7 @@ export class MainScene extends Phaser.Scene {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
       if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+      if (this.isInVillage(tx, ty)) continue;
       const idx = DECORATION_FRAMES[rng.between(0, DECORATION_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
@@ -679,6 +751,11 @@ export class MainScene extends Phaser.Scene {
       sprite.setOrigin(0.5, 0.9);
       sprite.setDepth(wy - 1);
     }
+  }
+
+  private isInVillage(tx: number, _ty: number): boolean {
+    // Village is the central X band; full vertical span (ty unused).
+    return tx > ZONE_FARM_X_MAX && tx <= ZONE_VILLAGE_X_MAX;
   }
 
   private buildHarvestables(): Phaser.GameObjects.Group {
@@ -690,6 +767,7 @@ export class MainScene extends Phaser.Scene {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
       if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+      if (this.isInVillage(tx, ty)) continue;
       const idx = TREE_FRAMES[rng.between(0, TREE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
@@ -706,6 +784,7 @@ export class MainScene extends Phaser.Scene {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
       if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+      if (this.isInVillage(tx, ty)) continue;
       const idx = OBSTACLE_FRAMES[rng.between(0, OBSTACLE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
@@ -726,6 +805,7 @@ export class MainScene extends Phaser.Scene {
         const tx = rng.between(1, MAP_W - 2);
         const ty = rng.between(1, MAP_H - 2);
         if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+        if (this.isInVillage(tx, ty)) continue;
         const wx = tx * TILE + TILE / 2;
         const wy = ty * TILE + TILE / 2;
         const sprite = this.add.sprite(wx, wy, ore.textureKey);
@@ -745,6 +825,32 @@ export class MainScene extends Phaser.Scene {
     sprite.setData("resourceType", type);
     sprite.setData("hp", RESOURCE_BASE_HP[type]);
     sprite.setData("baseScaleY", sprite.scaleY);
+  }
+
+  private buildVillage() {
+    for (const b of BUILDINGS) {
+      const wx = b.tx * TILE + TILE / 2;
+      const wy = b.ty * TILE + TILE / 2;
+      if (this.textures.exists(b.key)) {
+        const bldg = this.add.sprite(wx, wy, b.key);
+        bldg.setOrigin(0.5, 0.9);
+        bldg.setDepth(wy);
+      }
+      if (b.npcKey && this.textures.exists(b.npcKey)) {
+        const nx = wx;
+        const ny = wy + TILE * 2; // stand in front of the door
+        const npc = this.add.sprite(nx, ny, b.npcKey);
+        npc.setOrigin(0.5, 0.85);
+        npc.setDepth(ny);
+        const labelKey = this.bakeLabel(b.npcName, {
+          color: "#ffefb0",
+          fontSize: 9,
+        });
+        const label = this.add.image(nx, ny - 22, labelKey);
+        label.setOrigin(0.5, 1);
+        label.setDepth(ny + 1);
+      }
+    }
   }
 
   private tryHarvest() {
