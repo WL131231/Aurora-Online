@@ -68,7 +68,7 @@ interface LabelStyle {
   fontFamily?: string;
 }
 
-const LABEL_FONT_FAMILY = "Galmuri11, monospace";
+const LABEL_FONT_FAMILY = "Galmuri11Bitmap, Galmuri11, monospace";
 
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -120,13 +120,13 @@ export class MainScene extends Phaser.Scene {
   async create() {
     this.playerName = pickName();
 
-    // Block on font load so canvas-baked labels render with Galmuri11 from
-    // the start; without this, the first labels would bake with the fallback
-    // monospace font and only swap in after the font loads.
+    // Block on font load so canvas-baked labels render with Galmuri11Bitmap
+    // from the start; without this, the first labels would bake with the
+    // fallback monospace font and only swap in after the font loads.
     try {
-      await document.fonts.load("11px Galmuri11");
+      await document.fonts.load("11px Galmuri11Bitmap");
     } catch {
-      // ignore — caller will fall back to monospace
+      // ignore — caller will fall back to outline Galmuri11 or monospace
     }
 
     this.buildGroundLayer();
@@ -145,7 +145,6 @@ export class MainScene extends Phaser.Scene {
 
     const nameTagKey = this.bakeLabel(this.playerName, {
       color: "#ffffff",
-      stroke: { color: "#000000", width: 3 },
       fontSize: 11,
     });
     this.nameTag = this.add
@@ -309,7 +308,6 @@ export class MainScene extends Phaser.Scene {
     sprite.setDepth(p.y);
     const nameTagKey = this.bakeLabel(p.name, {
       color: "#cfe8ff",
-      stroke: { color: "#000000", width: 3 },
       fontSize: 11,
     });
     const nameTag = this.add
