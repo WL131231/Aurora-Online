@@ -53,6 +53,7 @@ type JoinOptions = { name?: string };
 type MoveMessage = { x: number; y: number; dir?: number; moving?: number };
 type ChatMessage = { text: string };
 type HarvestMessage = { id: string; toolId: string };
+type HotbarSelectMessage = { index: number };
 
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
 const MAX_NAME = 16;
@@ -94,6 +95,14 @@ export class WorldRoom extends Room<WorldState> {
 
     this.onMessage("harvest", (client, msg: HarvestMessage) => {
       this.handleHarvest(client, msg);
+    });
+
+    this.onMessage("hotbar_select", (client, msg: HotbarSelectMessage) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p) return;
+      const idx = msg?.index | 0;
+      if (idx < 0 || idx >= p.hotbar.length) return;
+      p.selectedHotbar = idx;
     });
   }
 
@@ -179,6 +188,10 @@ export class WorldRoom extends Room<WorldState> {
     if (h.hp <= 0) {
       h.alive = 0;
       const dropId = DROP_FOR_RESOURCE[h.rtype];
+      // Credit the harvester's inventory (server-authoritative).
+      const current = p.inventory.get(dropId) ?? 0;
+      p.inventory.set(dropId, current + 1);
+
       this.broadcast("harvest_drop", {
         id: msg.id,
         sessionId: client.sessionId,
@@ -189,10 +202,10 @@ export class WorldRoom extends Room<WorldState> {
       });
       const respawnMs = RESOURCE_RESPAWN_MS[h.rtype];
       this.clock.setTimeout(() => {
-        const current = this.state.harvestables.get(msg.id);
-        if (!current) return;
-        current.hp = current.maxHp;
-        current.alive = 1;
+        const node = this.state.harvestables.get(msg.id);
+        if (!node) return;
+        node.hp = node.maxHp;
+        node.alive = 1;
       }, respawnMs);
     }
   }
@@ -204,6 +217,13 @@ export class WorldRoom extends Room<WorldState> {
     p.x = WORLD_W / 2 + (Math.random() - 0.5) * 96;
     p.y = WORLD_H / 2 + (Math.random() - 0.5) * 96;
     p.dir = 0;
+
+    // Starter inventory + hotbar (20 slots not enforced server-side yet — just defaults).
+    p.inventory.set("axe", 1);
+    p.inventory.set("pickaxe", 1);
+    p.hotbar.push("axe", "pickaxe", "", "", "", "", "", "");
+    p.selectedHotbar = 0;
+
     this.state.players.set(client.sessionId, p);
     console.log(`[join] ${p.name} (${client.sessionId}) — ${this.state.players.size} online`);
   }

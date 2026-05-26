@@ -1,4 +1,4 @@
-import { MapSchema, Schema, type } from "@colyseus/schema";
+import { ArraySchema, MapSchema, Schema, type } from "@colyseus/schema";
 
 export class Player extends Schema {
   @type("string") name = "";
@@ -6,6 +6,11 @@ export class Player extends Schema {
   @type("number") y = 0;
   @type("number") dir = 0;
   @type("number") moving = 0;
+  // itemId -> count
+  @type({ map: "number" }) inventory = new MapSchema<number>();
+  // 8 hotbar slots; empty string = empty slot
+  @type(["string"]) hotbar = new ArraySchema<string>();
+  @type("uint8") selectedHotbar = 0;
 }
 
 export class Harvestable extends Schema {

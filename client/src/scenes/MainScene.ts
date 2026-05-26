@@ -271,6 +271,12 @@ export class MainScene extends Phaser.Scene {
     this.net.onHarvestableChange((id, h) => this.changeServerHarvestable(id, h));
     this.net.onHarvestableRemove((id) => this.removeServerHarvestable(id));
     this.net.onHarvestDrop((evt) => this.handleHarvestDrop(evt));
+    const inventory = this.registry.get("inventory") as Inventory | undefined;
+    if (inventory) {
+      this.net.onInventoryChange((itemId, count) => {
+        inventory.setFromServer(itemId, count);
+      });
+    }
 
     this.setStatus("연결 중...");
     const ok = await this.net.connect(this.playerName);
@@ -905,15 +911,35 @@ export class MainScene extends Phaser.Scene {
     rtype: string;
     dropId: string;
   }) {
-    const inventory = this.registry.get("inventory") as Inventory | undefined;
-    // Visual drop particle for everyone watching.
-    if (inventory && evt.sessionId === this.net.sessionId) {
-      this.spawnDropParticle(evt.x, evt.y - 12, evt.dropId, inventory);
-    } else if (this.textures.exists(`item_${evt.dropId}`)) {
-      // Cosmetic pop for spectators (no inventory mutation).
-      const drop = this.add.image(evt.x, evt.y - 12, `item_${evt.dropId}`);
-      drop.setDepth(99999);
-      drop.setScale(0.6);
+    // Server-authoritative inventory: the count is already updated via the
+    // player.inventory MapSchema. We only spawn the visual particle here.
+    if (!this.textures.exists(`item_${evt.dropId}`)) return;
+    const drop = this.add.image(evt.x, evt.y - 12, `item_${evt.dropId}`);
+    drop.setDepth(99999);
+    drop.setScale(0.6);
+    if (evt.sessionId === this.net.sessionId) {
+      // Self: fly to player.
+      this.tweens.add({
+        targets: drop,
+        y: evt.y - 28,
+        scale: 0.8,
+        duration: 220,
+        ease: "Sine.easeOut",
+        onComplete: () => {
+          this.tweens.add({
+            targets: drop,
+            x: this.player.x,
+            y: this.player.y - 12,
+            scale: 0.35,
+            alpha: 0.4,
+            duration: 320,
+            ease: "Cubic.easeIn",
+            onComplete: () => drop.destroy(),
+          });
+        },
+      });
+    } else {
+      // Spectator: gentle float-and-fade.
       this.tweens.add({
         targets: drop,
         y: drop.y - 18,

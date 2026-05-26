@@ -42,6 +42,7 @@ export type HarvestableAddHandler = (id: string, h: RemoteHarvestable) => void;
 export type HarvestableChangeHandler = (id: string, h: RemoteHarvestable) => void;
 export type HarvestableRemoveHandler = (id: string) => void;
 export type HarvestDropHandler = (event: HarvestDropEvent) => void;
+export type InventoryHandler = (itemId: string, count: number) => void;
 
 export class NetworkManager {
   private client: Client;
@@ -56,6 +57,8 @@ export class NetworkManager {
   private hChangeHandlers: HarvestableChangeHandler[] = [];
   private hRemoveHandlers: HarvestableRemoveHandler[] = [];
   private hDropHandlers: HarvestDropHandler[] = [];
+  private invHandlers: InventoryHandler[] = [];
+  private $?: ReturnType<typeof getStateCallbacks>;
 
   constructor(endpoint: string) {
     this.client = new Client(endpoint);
@@ -69,6 +72,7 @@ export class NetworkManager {
       this.connected = true;
 
       const $ = getStateCallbacks(room);
+      this.$ = $;
       const state = $(room.state) as unknown as {
         players: {
           onAdd: (cb: (p: RemotePlayer, k: string) => void) => void;
@@ -82,6 +86,9 @@ export class NetworkManager {
 
       state.players.onAdd((player, sessionId) => {
         for (const h of this.addHandlers) h(sessionId, player);
+        if (sessionId === this.sessionId) {
+          this.subscribeOwnInventory(player);
+        }
       });
       state.players.onRemove((_player, sessionId) => {
         for (const h of this.removeHandlers) h(sessionId);
@@ -146,6 +153,26 @@ export class NetworkManager {
     this.room.send("harvest", { id, toolId });
   }
 
+  private subscribeOwnInventory(player: RemotePlayer) {
+    if (!this.$) return;
+    const inv = (player as unknown as { inventory: object }).inventory;
+    if (!inv) return;
+    const callbacks = this.$(inv) as unknown as {
+      onAdd: (cb: (count: number, key: string) => void) => void;
+      onChange: (cb: (count: number, key: string) => void) => void;
+      onRemove: (cb: (count: number, key: string) => void) => void;
+    };
+    callbacks.onAdd((count, itemId) => {
+      for (const cb of this.invHandlers) cb(itemId, count);
+    });
+    callbacks.onChange((count, itemId) => {
+      for (const cb of this.invHandlers) cb(itemId, count);
+    });
+    callbacks.onRemove((_count, itemId) => {
+      for (const cb of this.invHandlers) cb(itemId, 0);
+    });
+  }
+
   onPlayerAdd(cb: PlayerHandler) {
     this.addHandlers.push(cb);
   }
@@ -166,5 +193,8 @@ export class NetworkManager {
   }
   onHarvestDrop(cb: HarvestDropHandler) {
     this.hDropHandlers.push(cb);
+  }
+  onInventoryChange(cb: InventoryHandler) {
+    this.invHandlers.push(cb);
   }
 }

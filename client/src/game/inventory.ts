@@ -25,6 +25,23 @@ export class Inventory extends Emitter {
     return true;
   }
 
+  // Set absolute count from an authoritative source (server). count<=0 removes.
+  setFromServer(itemId: string, count: number): void {
+    if (!ITEMS[itemId]) return;
+    if (count <= 0) this.counts.delete(itemId);
+    else this.counts.set(itemId, count);
+    this.emit();
+  }
+
+  // Replace all counts from a snapshot. Used on reconnect.
+  replaceFromServer(snapshot: Iterable<[string, number]>): void {
+    this.counts.clear();
+    for (const [id, n] of snapshot) {
+      if (ITEMS[id] && n > 0) this.counts.set(id, n);
+    }
+    this.emit();
+  }
+
   count(itemId: string): number {
     return this.counts.get(itemId) ?? 0;
   }
