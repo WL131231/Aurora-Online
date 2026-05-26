@@ -34,7 +34,7 @@ export interface Minimap {
   update(args: MinimapUpdate): void;
 }
 
-const MINIMAP_SIZE = 120;
+const MINIMAP_SIZE = 160;
 const MINIMAP_THROTTLE_MS = 100;
 const RESOURCE_DOT_COLORS: Record<string, string> = {
   tree: "#2d7a3a",

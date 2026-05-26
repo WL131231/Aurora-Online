@@ -979,20 +979,27 @@ export class MainScene extends Phaser.Scene {
       if (this.textures.exists(b.key)) {
         const bldg = this.add.sprite(wx, wy, b.key);
         bldg.setOrigin(0.5, 0.9);
+        bldg.setScale(2);
         bldg.setDepth(wy);
       }
       if (b.npcKey && this.textures.exists(b.npcKey)) {
         const nx = wx;
-        const ny = wy + TILE * 2; // stand in front of the door
+        // Stand further below the (now doubled-size) building so NPCs are
+        // clearly in front of the door, not clipping into the wall.
+        const ny = wy + TILE * 4;
         const npc = this.add.sprite(nx, ny, b.npcKey);
         npc.setOrigin(0.5, 0.85);
+        // PixelLab NPCs ship at 68px canvas; scale down to match the
+        // ~30px-tall player silhouette.
+        npc.setScale(0.5);
         npc.setDepth(ny);
         const labelKey = this.bakeLabel(b.npcName, {
           color: "#ffefb0",
           fontSize: 9,
         });
-        const label = this.add.image(nx, ny - 22, labelKey);
-        label.setOrigin(0.5, 1);
+        // Name plate now sits below the feet so the face is unobstructed.
+        const label = this.add.image(nx, ny + 6, labelKey);
+        label.setOrigin(0.5, 0);
         label.setDepth(ny + 1);
       }
     }
