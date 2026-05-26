@@ -1,0 +1,23 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Node (root level, in case anything spills outside subpackages)
+node_modules/
+dist/
+
+# Future: server / shared packages will have their own .gitignore
