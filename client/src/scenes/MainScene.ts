@@ -118,14 +118,14 @@ export class MainScene extends Phaser.Scene {
     this.physics.add.collider(this.player, this.trees);
 
     this.nameTag = this.add
-      .text(spawnX, spawnY - 24, this.playerName, {
+      .text(spawnX, spawnY + 8, this.playerName, {
         fontFamily: "monospace",
         fontSize: "10px",
         color: "#ffffff",
         backgroundColor: "rgba(0,0,0,0.55)",
         padding: { x: 4, y: 2 },
       })
-      .setOrigin(0.5, 1)
+      .setOrigin(0.5, 0)
       .setDepth(100000);
 
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
@@ -185,7 +185,7 @@ export class MainScene extends Phaser.Scene {
 
     this.player.setDepth(this.player.y);
     const nameX = Math.round(this.player.x);
-    const nameY = Math.round(this.player.y - this.player.displayHeight * 0.85 + 2);
+    const nameY = Math.round(this.player.y + 10);
     this.nameTag.setPosition(nameX, nameY);
 
     const moving = vx !== 0 || vy !== 0;
@@ -259,7 +259,7 @@ export class MainScene extends Phaser.Scene {
       ent.sprite.y = Phaser.Math.Linear(ent.sprite.y, p.y, lerp);
       ent.sprite.setDepth(ent.sprite.y);
       const nx = Math.round(ent.sprite.x);
-      const ny = Math.round(ent.sprite.y - ent.sprite.displayHeight * 0.85 + 2);
+      const ny = Math.round(ent.sprite.y + 10);
       ent.nameTag.setPosition(nx, ny);
       ent.nameTag.setDepth(ent.sprite.y + 1);
       this.applyPlayerAnimation(ent.sprite, p.dir | 0, !!p.moving);
@@ -278,14 +278,14 @@ export class MainScene extends Phaser.Scene {
     sprite.setOrigin(0.5, 0.85);
     sprite.setDepth(p.y);
     const nameTag = this.add
-      .text(p.x, p.y - 24, p.name, {
+      .text(p.x, p.y + 10, p.name, {
         fontFamily: "monospace",
         fontSize: "10px",
         color: "#cfe8ff",
         backgroundColor: "rgba(0,0,0,0.55)",
         padding: { x: 4, y: 2 },
       })
-      .setOrigin(0.5, 1)
+      .setOrigin(0.5, 0)
       .setDepth(p.y + 1);
     this.remotes.set(sid, { sprite, nameTag });
     this.appendChat(`* ${p.name} 입장`, sid);
@@ -497,6 +497,7 @@ export class MainScene extends Phaser.Scene {
     const trees = this.physics.add.staticGroup();
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
+    const SCALE = 1.5;
     for (let i = 0; i < 80; i++) {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
@@ -506,8 +507,8 @@ export class MainScene extends Phaser.Scene {
       const wy = ty * TILE + TILE / 2;
       const tree = trees.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
       tree.setOrigin(0.5, 0.9);
+      tree.setScale(SCALE);
       const body = tree.body as Phaser.Physics.Arcade.StaticBody;
-      // 48x48 frame, trunk roughly at columns 18-30 rows 38-46
       body.setSize(14, 6).setOffset(17, 38);
       tree.refreshBody();
       tree.setDepth(wy);
