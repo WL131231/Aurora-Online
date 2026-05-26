@@ -7,6 +7,14 @@
 }
 
 @font-face {
+  font-family: "Galmuri11Condensed";
+  src: url("/fonts/Galmuri11-Condensed.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
   font-family: "Galmuri11Bitmap";
   src: url("/fonts/Galmuri11Bitmap.ttf") format("truetype");
   font-weight: normal;
