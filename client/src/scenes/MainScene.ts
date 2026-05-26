@@ -29,9 +29,11 @@ const SPAWN_CLEAR_RADIUS = 5;
 // Row 2: 8=deadTree, 9=smallBush, 10=largeBush, 11=boulder
 // Row 3: 12=smallRocks, 13=mushrooms, 14=stump, 15=wildflowers
 const PROP_FRAME = 48;
-// Collidable: all 9 trees + boulder + stump
-const TREE_FRAMES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 14];
-// Walk-through decorations
+// Trees: alive only, scaled 1.5x and collidable
+const TREE_FRAMES = [0, 1, 2, 3, 4, 5, 6, 7];
+// Large props that should NOT scale (already big enough at native size), collidable
+const OBSTACLE_FRAMES = [11, 14];
+// Walk-through decorations (no collision, native size)
 const DECORATION_FRAMES = [9, 10, 12, 13, 15];
 
 // PixelLab character sprite sheets
@@ -50,16 +52,25 @@ type WASDKeys = {
 
 interface RemoteEntity {
   sprite: Phaser.GameObjects.Sprite;
-  nameTag: Phaser.GameObjects.Text;
+  nameTag: Phaser.GameObjects.Image;
+  name: string;
   chatBubble?: Phaser.GameObjects.Container;
   chatTimer?: Phaser.Time.TimerEvent;
+}
+
+interface LabelStyle {
+  color: string;
+  backgroundColor: string;
+  fontSize?: number;
+  padX?: number;
+  padY?: number;
 }
 
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: WASDKeys;
-  private nameTag!: Phaser.GameObjects.Text;
+  private nameTag!: Phaser.GameObjects.Image;
   private trees!: Phaser.Physics.Arcade.StaticGroup;
 
   private net!: NetworkManager;
@@ -76,6 +87,7 @@ export class MainScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
   private chatLogText!: Phaser.GameObjects.Text;
   private chatLog: string[] = [];
+  private bakedTextureCounter = 0;
 
   constructor() {
     super("MainScene");
@@ -117,14 +129,12 @@ export class MainScene extends Phaser.Scene {
     pbody.setSize(20, 8).setOffset(20, 46);
     this.physics.add.collider(this.player, this.trees);
 
+    const nameTagKey = this.bakeLabel(this.playerName, {
+      color: "#ffffff",
+      backgroundColor: "rgba(0,0,0,0.55)",
+    });
     this.nameTag = this.add
-      .text(spawnX, spawnY + 8, this.playerName, {
-        fontFamily: "monospace",
-        fontSize: "10px",
-        color: "#ffffff",
-        backgroundColor: "rgba(0,0,0,0.55)",
-        padding: { x: 4, y: 2 },
-      })
+      .image(spawnX, spawnY + 10, nameTagKey)
       .setOrigin(0.5, 0)
       .setDepth(100000);
 
@@ -277,24 +287,22 @@ export class MainScene extends Phaser.Scene {
     const sprite = this.add.sprite(p.x, p.y, "player_idle", initialDir);
     sprite.setOrigin(0.5, 0.85);
     sprite.setDepth(p.y);
+    const nameTagKey = this.bakeLabel(p.name, {
+      color: "#cfe8ff",
+      backgroundColor: "rgba(0,0,0,0.55)",
+    });
     const nameTag = this.add
-      .text(p.x, p.y + 10, p.name, {
-        fontFamily: "monospace",
-        fontSize: "10px",
-        color: "#cfe8ff",
-        backgroundColor: "rgba(0,0,0,0.55)",
-        padding: { x: 4, y: 2 },
-      })
+      .image(p.x, p.y + 10, nameTagKey)
       .setOrigin(0.5, 0)
       .setDepth(p.y + 1);
-    this.remotes.set(sid, { sprite, nameTag });
+    this.remotes.set(sid, { sprite, nameTag, name: p.name });
     this.appendChat(`* ${p.name} 입장`, sid);
   }
 
   private handlePlayerRemove(sid: string) {
     const ent = this.remotes.get(sid);
     if (!ent) return;
-    const name = ent.nameTag.text;
+    const name = ent.name;
     ent.sprite.destroy();
     ent.nameTag.destroy();
     ent.chatBubble?.destroy();
@@ -445,17 +453,47 @@ export class MainScene extends Phaser.Scene {
   }
 
   private makeBubble(text: string): Phaser.GameObjects.Container {
-    const t = this.add
-      .text(0, 0, text, {
-        fontFamily: "monospace",
-        fontSize: "10px",
-        color: "#000000",
-        backgroundColor: "#ffffff",
-        padding: { x: 5, y: 3 },
-        wordWrap: { width: 140 },
-      })
-      .setOrigin(0.5, 1);
-    return this.add.container(0, 0, [t]);
+    const key = this.bakeLabel(text, {
+      color: "#000000",
+      backgroundColor: "#ffffff",
+      padX: 5,
+      padY: 3,
+    });
+    const img = this.add.image(0, 0, key).setOrigin(0.5, 1);
+    return this.add.container(0, 0, [img]);
+  }
+
+  private bakeLabel(text: string, style: LabelStyle): string {
+    const fontSize = style.fontSize ?? 12;
+    const padX = style.padX ?? 4;
+    const padY = style.padY ?? 2;
+    const key = `label-${this.bakedTextureCounter++}`;
+
+    const font = `${fontSize}px monospace`;
+    const measure = document.createElement("canvas").getContext("2d")!;
+    measure.font = font;
+    const lines = text.split("\n");
+    const lineW = Math.ceil(Math.max(...lines.map((s) => measure.measureText(s).width)));
+    const lineH = fontSize + 2;
+    const w = lineW + padX * 2;
+    const h = lineH * lines.length + padY * 2;
+
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d")!;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = style.backgroundColor;
+    ctx.fillRect(0, 0, w, h);
+    ctx.font = font;
+    ctx.textBaseline = "top";
+    ctx.fillStyle = style.color;
+    lines.forEach((line, i) => {
+      ctx.fillText(line, padX, padY + i * lineH);
+    });
+
+    this.textures.addCanvas(key, c);
+    return key;
   }
 
   private buildGroundLayer() {
@@ -494,10 +532,11 @@ export class MainScene extends Phaser.Scene {
   }
 
   private buildTrees(): Phaser.Physics.Arcade.StaticGroup {
-    const trees = this.physics.add.staticGroup();
+    const group = this.physics.add.staticGroup();
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
-    const SCALE = 1.5;
+
+    // Trees (scaled 1.5x)
     for (let i = 0; i < 80; i++) {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
@@ -505,15 +544,32 @@ export class MainScene extends Phaser.Scene {
       const idx = TREE_FRAMES[rng.between(0, TREE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
-      const tree = trees.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
+      const tree = group.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
       tree.setOrigin(0.5, 0.9);
-      tree.setScale(SCALE);
+      tree.setScale(1.5);
       const body = tree.body as Phaser.Physics.Arcade.StaticBody;
       body.setSize(14, 6).setOffset(17, 38);
       tree.refreshBody();
       tree.setDepth(wy);
     }
-    return trees;
+
+    // Rocks and stumps (native size, no scaling)
+    for (let i = 0; i < 25; i++) {
+      const tx = rng.between(1, MAP_W - 2);
+      const ty = rng.between(1, MAP_H - 2);
+      if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+      const idx = OBSTACLE_FRAMES[rng.between(0, OBSTACLE_FRAMES.length - 1)];
+      const wx = tx * TILE + TILE / 2;
+      const wy = ty * TILE + TILE / 2;
+      const obs = group.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
+      obs.setOrigin(0.5, 0.9);
+      const body = obs.body as Phaser.Physics.Arcade.StaticBody;
+      body.setSize(28, 12).setOffset(10, 32);
+      obs.refreshBody();
+      obs.setDepth(wy);
+    }
+
+    return group;
   }
 
 }
