@@ -528,18 +528,42 @@ export class MainScene extends Phaser.Scene {
       ctx.fillText(line, x, y);
     });
 
-    // Threshold the alpha channel — any pixel with alpha > 127 becomes fully
-    // opaque, otherwise fully transparent. This removes the sub-pixel
-    // anti-aliased edges that canvas font rendering bakes in, which were
-    // showing up as a 1-2px ghost trail when the sprite moved.
+    // Threshold both alpha AND color to remove ClearType subpixel anti-aliasing
+    // that canvas font rendering bakes into the texture. Each pixel is forced
+    // to be fully opaque pure white (text) / pure black (stroke) or fully
+    // transparent — no grays, no color fringing. That's what was creating the
+    // "ghost" copies of the text visible when photographing the screen.
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
-    for (let i = 3; i < data.length; i += 4) {
-      data[i] = data[i] > 127 ? 255 : 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const alpha = data[i + 3];
+      if (alpha < 96) {
+        data[i] = 0;
+        data[i + 1] = 0;
+        data[i + 2] = 0;
+        data[i + 3] = 0;
+        continue;
+      }
+      const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      if (lum > 128) {
+        data[i] = 255;
+        data[i + 1] = 255;
+        data[i + 2] = 255;
+      } else {
+        data[i] = 0;
+        data[i + 1] = 0;
+        data[i + 2] = 0;
+      }
+      data[i + 3] = 255;
     }
     ctx.putImageData(imageData, 0, 0);
 
-    this.textures.addCanvas(key, c);
+    const tex = this.textures.addCanvas(key, c);
+    // Explicit NEAREST filter so scaling via camera zoom stays pixel-perfect
+    // even if the global pixelArt default doesn't propagate to canvas textures.
+    if (tex && typeof (tex as unknown as { setFilter?: (f: number) => void }).setFilter === "function") {
+      (tex as unknown as { setFilter: (f: number) => void }).setFilter(0);
+    }
     return key;
   }
 
