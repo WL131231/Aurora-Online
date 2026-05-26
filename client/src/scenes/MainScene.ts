@@ -20,15 +20,15 @@ const SERVER_ENDPOINT =
 const GRASS_BASE = 0;
 const GRASS_TUFT = 1;
 const GRASS_FLOWER = 2;
-const TREE_FRAMES = [4, 6, 7, 8, 9, 10, 11];
-const DECORATION_FRAMES = [5];
+const TREE_FRAMES = [16, 18, 19, 20, 21, 22, 23];
+const DECORATION_FRAMES = [5, 17];
 const SPAWN_CLEAR_RADIUS = 5;
 
 // PixelLab character sprite sheets
 const PLAYER_FRAME = 60;
-// dir convention: 0=S, 1=W, 2=E, 3=N
-// 8-direction sheet layout (PixelLab): 0=S, 1=SE, 2=E, 3=NE, 4=N, 5=NW, 6=W, 7=SW
-const IDLE_FRAME_BY_DIR = [0, 6, 2, 4];
+const WALK_FRAMES_PER_DIR = 6;
+// 8-direction order (PixelLab + our internal dir): 0=S, 1=SE, 2=E, 3=NE, 4=N, 5=NW, 6=W, 7=SW
+const DIR_KEYS = ["S", "SE", "E", "NE", "N", "NW", "W", "SW"] as const;
 
 type WASDKeys = {
   up: Phaser.Input.Keyboard.Key;
@@ -76,7 +76,7 @@ export class MainScene extends Phaser.Scene {
       frameWidth: TILE,
       frameHeight: TILE,
     });
-    this.load.spritesheet("player_walk", "/assets/characters/player_walk.png", {
+    this.load.spritesheet("player_walks", "/assets/characters/player_walks.png", {
       frameWidth: PLAYER_FRAME,
       frameHeight: PLAYER_FRAME,
     });
@@ -163,13 +163,17 @@ export class MainScene extends Phaser.Scene {
     }
     this.player.setVelocity(vx * PLAYER_SPEED, vy * PLAYER_SPEED);
 
-    if (vy < 0) this.dir = 3;
-    else if (vy > 0) this.dir = 0;
-    else if (vx < 0) this.dir = 1;
-    else if (vx > 0) this.dir = 2;
+    const sx = vx === 0 ? 0 : vx < 0 ? -1 : 1;
+    const sy = vy === 0 ? 0 : vy < 0 ? -1 : 1;
+    if (sx !== 0 || sy !== 0) {
+      const d = directionFromVector(sx, sy);
+      if (d !== undefined) this.dir = d;
+    }
 
     this.player.setDepth(this.player.y);
-    this.nameTag.setPosition(this.player.x, this.player.y - this.player.displayHeight * 0.85 + 2);
+    const nameX = Math.round(this.player.x);
+    const nameY = Math.round(this.player.y - this.player.displayHeight * 0.85 + 2);
+    this.nameTag.setPosition(nameX, nameY);
 
     const moving = vx !== 0 || vy !== 0;
     this.applyPlayerAnimation(this.player, this.dir, moving);
@@ -179,13 +183,19 @@ export class MainScene extends Phaser.Scene {
   }
 
   private createPlayerAnimations() {
-    if (this.anims.exists("walk_south")) return;
-    this.anims.create({
-      key: "walk_south",
-      frames: this.anims.generateFrameNumbers("player_walk", { start: 0, end: 5 }),
-      frameRate: 10,
-      repeat: -1,
-    });
+    if (this.anims.exists("walk_S")) return;
+    for (let dir = 0; dir < DIR_KEYS.length; dir++) {
+      const key = `walk_${DIR_KEYS[dir]}`;
+      this.anims.create({
+        key,
+        frames: this.anims.generateFrameNumbers("player_walks", {
+          start: dir * WALK_FRAMES_PER_DIR,
+          end: dir * WALK_FRAMES_PER_DIR + WALK_FRAMES_PER_DIR - 1,
+        }),
+        frameRate: 10,
+        repeat: -1,
+      });
+    }
   }
 
   private applyPlayerAnimation(
@@ -193,16 +203,17 @@ export class MainScene extends Phaser.Scene {
     dir: number,
     moving: boolean
   ) {
-    if (moving && dir === 0) {
-      if (sprite.anims.currentAnim?.key !== "walk_south") {
-        sprite.play("walk_south", true);
+    const clampedDir = dir >= 0 && dir < DIR_KEYS.length ? dir : 0;
+    if (moving) {
+      const key = `walk_${DIR_KEYS[clampedDir]}`;
+      if (sprite.anims.currentAnim?.key !== key) {
+        sprite.play(key, true);
       }
       return;
     }
     if (sprite.anims.isPlaying) sprite.anims.stop();
-    const idleFrame = IDLE_FRAME_BY_DIR[dir] ?? 0;
-    if (sprite.texture.key !== "player_idle" || sprite.frame.name !== String(idleFrame)) {
-      sprite.setTexture("player_idle", idleFrame);
+    if (sprite.texture.key !== "player_idle" || sprite.frame.name !== String(clampedDir)) {
+      sprite.setTexture("player_idle", clampedDir);
     }
   }
 
@@ -234,11 +245,13 @@ export class MainScene extends Phaser.Scene {
       ent.sprite.x = Phaser.Math.Linear(ent.sprite.x, p.x, lerp);
       ent.sprite.y = Phaser.Math.Linear(ent.sprite.y, p.y, lerp);
       ent.sprite.setDepth(ent.sprite.y);
-      ent.nameTag.setPosition(ent.sprite.x, ent.sprite.y - ent.sprite.displayHeight * 0.85 + 2);
+      const nx = Math.round(ent.sprite.x);
+      const ny = Math.round(ent.sprite.y - ent.sprite.displayHeight * 0.85 + 2);
+      ent.nameTag.setPosition(nx, ny);
       ent.nameTag.setDepth(ent.sprite.y + 1);
       this.applyPlayerAnimation(ent.sprite, p.dir | 0, !!p.moving);
       if (ent.chatBubble) {
-        ent.chatBubble.setPosition(ent.sprite.x, ent.sprite.y - ent.sprite.displayHeight - 8);
+        ent.chatBubble.setPosition(Math.round(ent.sprite.x), Math.round(ent.sprite.y - ent.sprite.displayHeight - 8));
         ent.chatBubble.setDepth(ent.sprite.y + 2);
       }
     }
@@ -247,7 +260,8 @@ export class MainScene extends Phaser.Scene {
   private handlePlayerAdd(sid: string, p: RemotePlayer) {
     if (sid === this.net.sessionId) return;
     if (this.remotes.has(sid)) return;
-    const sprite = this.add.sprite(p.x, p.y, "player_idle", IDLE_FRAME_BY_DIR[p.dir | 0] ?? 0);
+    const initialDir = Math.min(Math.max(p.dir | 0, 0), DIR_KEYS.length - 1);
+    const sprite = this.add.sprite(p.x, p.y, "player_idle", initialDir);
     sprite.setOrigin(0.5, 0.85);
     sprite.setDepth(p.y);
     const nameTag = this.add
@@ -491,6 +505,21 @@ export class MainScene extends Phaser.Scene {
     return trees;
   }
 
+}
+
+// Maps a unit-vector (sx, sy) to a direction index matching DIR_KEYS.
+// sx, sy ∈ {-1, 0, 1}; (0, 0) returns undefined (caller keeps last dir).
+function directionFromVector(sx: number, sy: number): number | undefined {
+  if (sx === 0 && sy === 0) return undefined;
+  if (sx === 0 && sy > 0) return 0;  // S
+  if (sx > 0 && sy > 0) return 1;    // SE
+  if (sx > 0 && sy === 0) return 2;  // E
+  if (sx > 0 && sy < 0) return 3;    // NE
+  if (sx === 0 && sy < 0) return 4;  // N
+  if (sx < 0 && sy < 0) return 5;    // NW
+  if (sx < 0 && sy === 0) return 6;  // W
+  if (sx < 0 && sy > 0) return 7;    // SW
+  return undefined;
 }
 
 function pickName(): string {
