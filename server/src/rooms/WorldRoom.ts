@@ -107,12 +107,7 @@ export class WorldRoom extends Room<WorldState> {
   }
 
   private seedHarvestables() {
-    const center = { x: MAP_W / 2, y: MAP_H / 2 };
     let counter = 0;
-    const inVillage = (tx: number) => tx > ZONE_FARM_X_MAX && tx <= ZONE_VILLAGE_X_MAX;
-    const nearSpawn = (tx: number, ty: number) =>
-      Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS &&
-      Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS;
     const rand = (lo: number, hi: number) => lo + Math.floor(Math.random() * (hi - lo + 1));
 
     const place = (
@@ -134,24 +129,20 @@ export class WorldRoom extends Room<WorldState> {
       this.state.harvestables.set(`h${counter++}`, h);
     };
 
+    // Logging zone (X 0..ZONE_FARM_X_MAX): trees only.
     for (let i = 0; i < 80; i++) {
-      const tx = rand(1, MAP_W - 2);
+      const tx = rand(1, ZONE_FARM_X_MAX);
       const ty = rand(1, MAP_H - 2);
-      if (nearSpawn(tx, ty)) continue;
-      if (inVillage(tx)) continue;
       const variant = TREE_FRAMES[rand(0, TREE_FRAMES.length - 1)];
       place("tree", tx, ty, variant, 1.75);
     }
 
+    // Mine zone (X ZONE_VILLAGE_X_MAX+1..MAP_W-2): rocks + ores.
     for (let i = 0; i < 25; i++) {
-      const tx = rand(1, MAP_W - 2);
+      const tx = rand(ZONE_VILLAGE_X_MAX + 1, MAP_W - 2);
       const ty = rand(1, MAP_H - 2);
-      if (nearSpawn(tx, ty)) continue;
-      if (inVillage(tx)) continue;
-      // Boulder only (frame 11) — stumps are decorative.
       place("rock", tx, ty, 11, 1);
     }
-
     const ores: Array<{ type: string; count: number }> = [
       { type: "copper_node", count: 12 },
       { type: "silver_node", count: 6 },
@@ -159,10 +150,8 @@ export class WorldRoom extends Room<WorldState> {
     ];
     for (const ore of ores) {
       for (let i = 0; i < ore.count; i++) {
-        const tx = rand(1, MAP_W - 2);
+        const tx = rand(ZONE_VILLAGE_X_MAX + 1, MAP_W - 2);
         const ty = rand(1, MAP_H - 2);
-        if (nearSpawn(tx, ty)) continue;
-        if (inVillage(tx)) continue;
         place(ore.type, tx, ty, 0, 1);
       }
     }

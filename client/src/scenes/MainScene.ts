@@ -77,6 +77,29 @@ const ORE_NODES: Array<{ type: ResourceType; textureKey: string; count: number }
   { type: "gold_node", textureKey: "node_gold", count: 3 },
 ];
 
+// Gates between village ↔ logging (west) and village ↔ mine (east).
+interface PortalSpec {
+  key: "west" | "east";
+  x: number;
+  y: number;
+  label: string;
+}
+const PORTAL_Y_TILE = 25;
+const PORTALS: PortalSpec[] = [
+  {
+    key: "west",
+    x: (Math.floor(MAP_W / 3) + 1) * TILE - TILE / 2,
+    y: PORTAL_Y_TILE * TILE,
+    label: "벌목장 입구",
+  },
+  {
+    key: "east",
+    x: Math.floor((MAP_W * 2) / 3) * TILE + TILE / 2,
+    y: PORTAL_Y_TILE * TILE,
+    label: "광산 입구",
+  },
+];
+
 // Village buildings (top-down 3/4 perspective). Each is placed once.
 interface BuildingSpec {
   key: string;          // texture key
@@ -90,6 +113,14 @@ const BUILDINGS: BuildingSpec[] = [
   { key: "bldg_store",     tx: 21, ty: 30, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨"  },
   { key: "bldg_blacksmith",tx: 28, ty: 30, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨" },
 ];
+
+const NPC_LINES: Record<string, string> = {
+  "이장 이씨": "어서 오게, 모험가. 마을은 평화롭지만 곧 할 일이 생길 거야.",
+  "잡화점 이씨": "오늘은 어떤 게 필요해요? 곧 진열대를 채울 예정이에요!",
+  "대장장이 노씨": "도구가 무뎌졌으면 가져오게. 강화 시스템도 곧 준비할 테니.",
+};
+const NPC_TALK_RANGE_SQ = 70 * 70;
+const PORTAL_USE_RANGE_SQ = 60 * 60;
 
 interface RemoteEntity {
   sprite: Phaser.GameObjects.Sprite;
@@ -122,6 +153,7 @@ export class MainScene extends Phaser.Scene {
   private harvestablesById = new Map<string, Phaser.GameObjects.Sprite>();
   // Server-synced harvestable HP cache so we can detect deltas on change.
   private serverHpCache = new Map<string, number>();
+  private npcs: Array<{ sprite: Phaser.GameObjects.Sprite; name: string; line: string }> = [];
 
   private net!: NetworkManager;
   private playerName = "Aurora";
@@ -189,10 +221,12 @@ export class MainScene extends Phaser.Scene {
     for (const ore of ORE_NODES) {
       this.load.image(ore.textureKey, `/assets/props/${ore.textureKey}.png`);
     }
-    // Village buildings
+    // Village buildings (used only when the full village map background is absent).
     this.load.image("bldg_town_hall", "/assets/buildings/town_hall.png");
     this.load.image("bldg_store", "/assets/buildings/store.png");
     this.load.image("bldg_blacksmith", "/assets/buildings/blacksmith.png");
+    // Full painted village map background — covers the whole village zone if present.
+    this.load.image("map_village", "/assets/maps/village.png");
     // NPC south-facing idles (full 8-direction support can be added later)
     this.load.image("npc_chief_lee", "/assets/npcs/chief_lee.png");
     this.load.image("npc_mrs_lee", "/assets/npcs/mrs_lee.png");
@@ -332,6 +366,7 @@ export class MainScene extends Phaser.Scene {
     this.nameTag.setPosition(this.player.x, this.player.y - 5);
 
     this.applyPlayerAnimation(this.player, this.dir, moving, running);
+    this.tryPortal();
 
     this.syncRemotes();
     this.maybeSendMove(time, moving);
@@ -973,6 +1008,10 @@ export class MainScene extends Phaser.Scene {
   }
 
   private buildVillage() {
+    // village.png is kept as a reference image only — the actual village is
+    // reconstructed in-engine from individual assets (castle, road, buildings,
+    // market stalls, fountain, etc.). See `client/public/assets/maps/village.png`.
+
     for (const b of BUILDINGS) {
       const wx = b.tx * TILE + TILE / 2;
       const wy = b.ty * TILE + TILE / 2;
@@ -989,9 +1028,9 @@ export class MainScene extends Phaser.Scene {
         const ny = wy + TILE * 4;
         const npc = this.add.sprite(nx, ny, b.npcKey);
         npc.setOrigin(0.5, 0.85);
-        // PixelLab NPCs ship at 68px canvas; scale down to match the
-        // ~30px-tall player silhouette.
-        npc.setScale(0.5);
+        // NPC source canvas is 68px, player frame is 60px — scale so the
+        // silhouette matches the player on screen.
+        npc.setScale(60 / 68);
         npc.setDepth(ny);
         const labelKey = this.bakeLabel(b.npcName, {
           color: "#ffefb0",
@@ -1001,12 +1040,90 @@ export class MainScene extends Phaser.Scene {
         const label = this.add.image(nx, ny + 6, labelKey);
         label.setOrigin(0.5, 0);
         label.setDepth(ny + 1);
+        this.npcs.push({
+          sprite: npc,
+          name: b.npcName,
+          line: NPC_LINES[b.npcName] ?? "...",
+        });
       }
+    }
+    this.buildPortals();
+  }
+
+  private buildPortals() {
+    for (const p of PORTALS) {
+      // Stone arch (32x64 with darker inner opening).
+      const arch = this.add.graphics();
+      arch.fillStyle(0x4a4a4a, 1);
+      arch.fillRoundedRect(p.x - 22, p.y - 56, 44, 64, 4);
+      arch.lineStyle(2, 0x222222, 1);
+      arch.strokeRoundedRect(p.x - 22, p.y - 56, 44, 64, 4);
+      arch.fillStyle(0x14110b, 0.92);
+      arch.fillRoundedRect(p.x - 14, p.y - 48, 28, 50, 14);
+      arch.setDepth(p.y);
+
+      const labelKey = this.bakeLabel(`${p.label}\n[↑]`, {
+        color: "#fff8d0",
+        fontSize: 9,
+        background: "#3a230f",
+        padX: 5,
+        padY: 3,
+      });
+      const label = this.add.image(p.x, p.y - 64, labelKey);
+      label.setOrigin(0.5, 1);
+      label.setDepth(p.y + 1);
+    }
+  }
+
+  private currentZone(): "village" | "logging" | "mine" {
+    const tx = Math.floor(this.player.x / TILE);
+    if (tx <= ZONE_FARM_X_MAX) return "logging";
+    if (tx > ZONE_VILLAGE_X_MAX) return "mine";
+    return "village";
+  }
+
+  private tryPortal() {
+    if (!this.cursors.up) return;
+    if (!Phaser.Input.Keyboard.JustDown(this.cursors.up)) return;
+    for (const p of PORTALS) {
+      const dx = p.x - this.player.x;
+      const dy = p.y - this.player.y;
+      if (dx * dx + dy * dy < PORTAL_USE_RANGE_SQ) {
+        this.useGate(p.key);
+        return;
+      }
+    }
+  }
+
+  private useGate(key: "west" | "east") {
+    const zone = this.currentZone();
+    let destX: number;
+    const destY = PORTAL_Y_TILE * TILE;
+    if (key === "west") {
+      destX = zone === "village" ? 8 * TILE : (ZONE_FARM_X_MAX + 2) * TILE;
+    } else {
+      destX = zone === "village" ? 42 * TILE : (ZONE_VILLAGE_X_MAX - 1) * TILE;
+    }
+    this.cameras.main.flash(220, 0, 0, 0);
+    this.player.setPosition(destX, destY);
+    if (this.net.connected) {
+      this.net.sendMove(destX, destY, this.dir, false);
     }
   }
 
   private tryHarvest() {
     if (this.swinging) return;
+
+    // NPC interaction wins over harvest when a friendly is in range.
+    for (const npc of this.npcs) {
+      const dx = npc.sprite.x - this.player.x;
+      const dy = npc.sprite.y - this.player.y;
+      if (dx * dx + dy * dy < NPC_TALK_RANGE_SQ) {
+        this.appendChat(`${npc.name}: ${npc.line}`);
+        return;
+      }
+    }
+
     const hotbar = this.registry.get("hotbar") as Hotbar | undefined;
     const inventory = this.registry.get("inventory") as Inventory | undefined;
     if (!hotbar || !inventory) return;
