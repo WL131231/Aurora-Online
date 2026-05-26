@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { NetworkManager } from "../net/NetworkManager";
-import type { RemotePlayer } from "../net/NetworkManager";
+import type { RemoteHarvestable, RemotePlayer } from "../net/NetworkManager";
 import {
   DROP_FOR_RESOURCE,
   ITEMS,
@@ -118,6 +118,10 @@ export class MainScene extends Phaser.Scene {
   private runKey!: Phaser.Input.Keyboard.Key;
   private nameTag!: Phaser.GameObjects.Image;
   private harvestables!: Phaser.GameObjects.Group;
+  // id → sprite map for server-synced harvestables (online mode only).
+  private harvestablesById = new Map<string, Phaser.GameObjects.Sprite>();
+  // Server-synced harvestable HP cache so we can detect deltas on change.
+  private serverHpCache = new Map<string, number>();
 
   private net!: NetworkManager;
   private playerName = "Aurora";
@@ -224,7 +228,7 @@ export class MainScene extends Phaser.Scene {
 
     this.buildGroundLayer();
     this.buildDecorations();
-    this.harvestables = this.buildHarvestables();
+    this.harvestables = this.add.group();
     this.buildVillage();
     this.createPlayerAnimations();
 
@@ -263,12 +267,18 @@ export class MainScene extends Phaser.Scene {
     this.net.onPlayerAdd((id, player) => this.handlePlayerAdd(id, player));
     this.net.onPlayerRemove((id) => this.handlePlayerRemove(id));
     this.net.onChat((msg) => this.appendChat(`${msg.name}: ${msg.text}`, msg.sessionId));
+    this.net.onHarvestableAdd((id, h) => this.addServerHarvestable(id, h));
+    this.net.onHarvestableChange((id, h) => this.changeServerHarvestable(id, h));
+    this.net.onHarvestableRemove((id) => this.removeServerHarvestable(id));
+    this.net.onHarvestDrop((evt) => this.handleHarvestDrop(evt));
 
     this.setStatus("연결 중...");
     const ok = await this.net.connect(this.playerName);
     if (ok) {
       this.setStatus(`온라인 — ${this.playerName}`);
     } else {
+      // Offline: seed locally so the world isn't empty.
+      this.seedOfflineHarvestables();
       this.setStatus(`오프라인 모드 — ${this.playerName} (서버 없음)`);
     }
 
@@ -758,8 +768,10 @@ export class MainScene extends Phaser.Scene {
     return tx > ZONE_FARM_X_MAX && tx <= ZONE_VILLAGE_X_MAX;
   }
 
-  private buildHarvestables(): Phaser.GameObjects.Group {
-    const group = this.add.group();
+  // Offline fallback when the server isn't reachable. Server is the master in
+  // online mode; this only runs when net.connect() fails.
+  private seedOfflineHarvestables() {
+    const group = this.harvestables;
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
 
@@ -815,8 +827,115 @@ export class MainScene extends Phaser.Scene {
         group.add(sprite);
       }
     }
+  }
 
-    return group;
+  // ---- Server-synced harvestables ----
+
+  private resolveHarvestableTexture(h: RemoteHarvestable): { key: string; frame?: number } | null {
+    if (h.rtype === "tree" || h.rtype === "rock") {
+      return { key: "props", frame: h.variant };
+    }
+    if (h.rtype === "copper_node") return { key: "node_copper" };
+    if (h.rtype === "silver_node") return { key: "node_silver" };
+    if (h.rtype === "gold_node") return { key: "node_gold" };
+    return null;
+  }
+
+  private addServerHarvestable(id: string, h: RemoteHarvestable) {
+    const tex = this.resolveHarvestableTexture(h);
+    if (!tex) return;
+    if (!this.textures.exists(tex.key)) return;
+    const sprite = tex.frame !== undefined
+      ? this.add.sprite(h.x, h.y, tex.key, tex.frame)
+      : this.add.sprite(h.x, h.y, tex.key);
+    sprite.setOrigin(0.5, 0.9);
+    if (h.scale !== 1) sprite.setScale(h.scale);
+    sprite.setDepth(h.y);
+    sprite.setData("resourceType", h.rtype);
+    sprite.setData("harvestableId", id);
+    sprite.setData("baseScaleY", sprite.scaleY);
+    sprite.setVisible(h.alive === 1);
+    sprite.setActive(h.alive === 1);
+    this.harvestables.add(sprite);
+    this.harvestablesById.set(id, sprite);
+    this.serverHpCache.set(id, h.hp);
+  }
+
+  private changeServerHarvestable(id: string, h: RemoteHarvestable) {
+    const sprite = this.harvestablesById.get(id);
+    if (!sprite) return;
+    const prevHp = this.serverHpCache.get(id) ?? h.maxHp;
+    this.serverHpCache.set(id, h.hp);
+
+    if (h.hp < prevHp) this.flashHarvestable(sprite);
+
+    const wasAlive = sprite.visible;
+    const isAlive = h.alive === 1;
+    if (wasAlive && !isAlive) {
+      const baseScaleY = (sprite.getData("baseScaleY") as number) ?? sprite.scaleY;
+      this.tweens.add({
+        targets: sprite,
+        alpha: 0,
+        scaleY: baseScaleY * 0.6,
+        duration: 220,
+        onComplete: () => {
+          sprite.setVisible(false).setActive(false);
+          sprite.setAlpha(1);
+          sprite.setScale(sprite.scaleX, baseScaleY);
+        },
+      });
+    } else if (!wasAlive && isAlive) {
+      sprite.setVisible(true).setActive(true);
+    }
+  }
+
+  private removeServerHarvestable(id: string) {
+    const sprite = this.harvestablesById.get(id);
+    if (!sprite) return;
+    this.harvestables.remove(sprite, true, true);
+    this.harvestablesById.delete(id);
+    this.serverHpCache.delete(id);
+  }
+
+  private handleHarvestDrop(evt: {
+    id: string;
+    sessionId: string;
+    x: number;
+    y: number;
+    rtype: string;
+    dropId: string;
+  }) {
+    const inventory = this.registry.get("inventory") as Inventory | undefined;
+    // Visual drop particle for everyone watching.
+    if (inventory && evt.sessionId === this.net.sessionId) {
+      this.spawnDropParticle(evt.x, evt.y - 12, evt.dropId, inventory);
+    } else if (this.textures.exists(`item_${evt.dropId}`)) {
+      // Cosmetic pop for spectators (no inventory mutation).
+      const drop = this.add.image(evt.x, evt.y - 12, `item_${evt.dropId}`);
+      drop.setDepth(99999);
+      drop.setScale(0.6);
+      this.tweens.add({
+        targets: drop,
+        y: drop.y - 18,
+        alpha: 0,
+        duration: 400,
+        onComplete: () => drop.destroy(),
+      });
+    }
+  }
+
+  private flashHarvestable(sprite: Phaser.GameObjects.Sprite) {
+    sprite.setTint(0xff8a8a);
+    this.time.delayedCall(90, () => sprite.clearTint());
+    const baseX = sprite.x;
+    this.tweens.add({
+      targets: sprite,
+      x: baseX + 3,
+      duration: 40,
+      yoyo: true,
+      repeat: 1,
+      onComplete: () => sprite.setX(baseX),
+    });
   }
 
   // Attach harvest metadata + remember initial scale so respawn can reset it
@@ -899,11 +1018,18 @@ export class MainScene extends Phaser.Scene {
     if (!playedChar) this.playSwing(tool.id, nearest);
 
     if (nearest) {
-      this.time.delayedCall(SWING_IMPACT_MS, () => {
-        if (nearest && nearest.scene && nearest.active) {
-          this.damageHarvestable(nearest, inventory);
-        }
-      });
+      const id = nearest.getData("harvestableId") as string | undefined;
+      if (id && this.net.connected) {
+        // Online: server owns HP/respawn; flash + drop come back via onChange/onHarvestDrop.
+        this.net.sendHarvest(id, tool.id);
+      } else if (id === undefined) {
+        // Offline fallback: client-side damage and drop on impact frame.
+        this.time.delayedCall(SWING_IMPACT_MS, () => {
+          if (nearest && nearest.scene && nearest.active) {
+            this.damageHarvestableLocally(nearest, inventory);
+          }
+        });
+      }
     }
   }
 
@@ -975,7 +1101,8 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
-  private damageHarvestable(sprite: Phaser.GameObjects.Sprite, inventory: Inventory) {
+  // Offline fallback only — server-synced harvestables go through changeServerHarvestable.
+  private damageHarvestableLocally(sprite: Phaser.GameObjects.Sprite, inventory: Inventory) {
     const type = sprite.getData("resourceType") as ResourceType;
     const hp = (sprite.getData("hp") as number) - 1;
 

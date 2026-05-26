@@ -1,26 +1,58 @@
 import { Client, Room } from "colyseus";
-import { Player, WorldState } from "../schemas/WorldState.js";
+import { Harvestable, Player, WorldState } from "../schemas/WorldState.js";
 
 const TILE = 32;
 const MAP_W = 50;
 const MAP_H = 50;
 const WORLD_W = MAP_W * TILE;
 const WORLD_H = MAP_H * TILE;
+const SPAWN_CLEAR_RADIUS = 5;
 
-type JoinOptions = {
-  name?: string;
+// Zones (mirror client: farm/village/logging horizontal split).
+const ZONE_FARM_X_MAX = Math.floor(MAP_W / 3);
+const ZONE_VILLAGE_X_MAX = Math.floor((MAP_W * 2) / 3);
+
+// Harvest config — mirrors client/src/game/items.ts.
+const RESOURCE_BASE_HP: Record<string, number> = {
+  tree: 4,
+  rock: 3,
+  copper_node: 5,
+  silver_node: 7,
+  gold_node: 9,
+};
+const RESOURCE_RESPAWN_MS: Record<string, number> = {
+  tree: 45_000,
+  rock: 60_000,
+  copper_node: 90_000,
+  silver_node: 120_000,
+  gold_node: 180_000,
+};
+const TOOL_FOR_RESOURCE: Record<string, string> = {
+  tree: "axe",
+  rock: "pickaxe",
+  copper_node: "pickaxe",
+  silver_node: "pickaxe",
+  gold_node: "pickaxe",
+};
+const DROP_FOR_RESOURCE: Record<string, string> = {
+  tree: "wood",
+  rock: "stone",
+  copper_node: "copper_ore",
+  silver_node: "silver_ore",
+  gold_node: "gold_ore",
 };
 
-type MoveMessage = {
-  x: number;
-  y: number;
-  dir?: number;
-  moving?: number;
-};
+// Distance check for harvest — slight buffer over client HARVEST_RANGE=56
+// so honest clients don't get rejected by float drift.
+const HARVEST_RANGE_SQ = 80 * 80;
 
-type ChatMessage = {
-  text: string;
-};
+// Tinytown frame indices used for trees (alive variants).
+const TREE_FRAMES = [0, 1, 2, 3, 4, 5, 6, 7];
+
+type JoinOptions = { name?: string };
+type MoveMessage = { x: number; y: number; dir?: number; moving?: number };
+type ChatMessage = { text: string };
+type HarvestMessage = { id: string; toolId: string };
 
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
 const MAX_NAME = 16;
@@ -31,13 +63,15 @@ export class WorldRoom extends Room<WorldState> {
   maxClients = 64;
 
   onCreate() {
+    this.seedHarvestables();
+
     this.onMessage("move", (client, msg: MoveMessage) => {
       const p = this.state.players.get(client.sessionId);
       if (!p) return;
       if (typeof msg.x !== "number" || typeof msg.y !== "number") return;
       p.x = clamp(msg.x, 0, WORLD_W);
       p.y = clamp(msg.y, 0, WORLD_H);
-      if (typeof msg.dir === "number" && msg.dir >= 0 && msg.dir < 4) {
+      if (typeof msg.dir === "number" && msg.dir >= 0 && msg.dir < 8) {
         p.dir = msg.dir | 0;
       }
       if (typeof msg.moving === "number") {
@@ -57,6 +91,110 @@ export class WorldRoom extends Room<WorldState> {
         ts: Date.now(),
       });
     });
+
+    this.onMessage("harvest", (client, msg: HarvestMessage) => {
+      this.handleHarvest(client, msg);
+    });
+  }
+
+  private seedHarvestables() {
+    const center = { x: MAP_W / 2, y: MAP_H / 2 };
+    let counter = 0;
+    const inVillage = (tx: number) => tx > ZONE_FARM_X_MAX && tx <= ZONE_VILLAGE_X_MAX;
+    const nearSpawn = (tx: number, ty: number) =>
+      Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS &&
+      Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS;
+    const rand = (lo: number, hi: number) => lo + Math.floor(Math.random() * (hi - lo + 1));
+
+    const place = (
+      rtype: string,
+      tx: number,
+      ty: number,
+      variant: number,
+      scale: number,
+    ) => {
+      const h = new Harvestable();
+      h.rtype = rtype;
+      h.x = tx * TILE + TILE / 2;
+      h.y = ty * TILE + TILE / 2;
+      h.hp = RESOURCE_BASE_HP[rtype];
+      h.maxHp = h.hp;
+      h.alive = 1;
+      h.variant = variant;
+      h.scale = scale;
+      this.state.harvestables.set(`h${counter++}`, h);
+    };
+
+    for (let i = 0; i < 80; i++) {
+      const tx = rand(1, MAP_W - 2);
+      const ty = rand(1, MAP_H - 2);
+      if (nearSpawn(tx, ty)) continue;
+      if (inVillage(tx)) continue;
+      const variant = TREE_FRAMES[rand(0, TREE_FRAMES.length - 1)];
+      place("tree", tx, ty, variant, 1.75);
+    }
+
+    for (let i = 0; i < 25; i++) {
+      const tx = rand(1, MAP_W - 2);
+      const ty = rand(1, MAP_H - 2);
+      if (nearSpawn(tx, ty)) continue;
+      if (inVillage(tx)) continue;
+      // Boulder only (frame 11) — stumps are decorative.
+      place("rock", tx, ty, 11, 1);
+    }
+
+    const ores: Array<{ type: string; count: number }> = [
+      { type: "copper_node", count: 12 },
+      { type: "silver_node", count: 6 },
+      { type: "gold_node", count: 3 },
+    ];
+    for (const ore of ores) {
+      for (let i = 0; i < ore.count; i++) {
+        const tx = rand(1, MAP_W - 2);
+        const ty = rand(1, MAP_H - 2);
+        if (nearSpawn(tx, ty)) continue;
+        if (inVillage(tx)) continue;
+        place(ore.type, tx, ty, 0, 1);
+      }
+    }
+
+    console.log(`[seed] ${this.state.harvestables.size} harvestables`);
+  }
+
+  private handleHarvest(client: Client, msg: HarvestMessage) {
+    if (!msg || typeof msg.id !== "string" || typeof msg.toolId !== "string") return;
+    const h = this.state.harvestables.get(msg.id);
+    if (!h || h.alive !== 1) return;
+
+    const required = TOOL_FOR_RESOURCE[h.rtype];
+    if (!required || msg.toolId !== required) return;
+
+    const p = this.state.players.get(client.sessionId);
+    if (!p) return;
+    const dx = h.x - p.x;
+    const dy = h.y - p.y;
+    if (dx * dx + dy * dy > HARVEST_RANGE_SQ) return;
+
+    h.hp = Math.max(0, h.hp - 1);
+    if (h.hp <= 0) {
+      h.alive = 0;
+      const dropId = DROP_FOR_RESOURCE[h.rtype];
+      this.broadcast("harvest_drop", {
+        id: msg.id,
+        sessionId: client.sessionId,
+        x: h.x,
+        y: h.y,
+        rtype: h.rtype,
+        dropId,
+      });
+      const respawnMs = RESOURCE_RESPAWN_MS[h.rtype];
+      this.clock.setTimeout(() => {
+        const current = this.state.harvestables.get(msg.id);
+        if (!current) return;
+        current.hp = current.maxHp;
+        current.alive = 1;
+      }, respawnMs);
+    }
   }
 
   onJoin(client: Client, options: JoinOptions) {

@@ -8,6 +8,17 @@ export interface RemotePlayer {
   moving: number;
 }
 
+export interface RemoteHarvestable {
+  rtype: string;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  alive: number;
+  variant: number;
+  scale: number;
+}
+
 export interface ChatMessage {
   sessionId: string;
   name: string;
@@ -15,9 +26,22 @@ export interface ChatMessage {
   ts: number;
 }
 
+export interface HarvestDropEvent {
+  id: string;
+  sessionId: string;
+  x: number;
+  y: number;
+  rtype: string;
+  dropId: string;
+}
+
 export type PlayerHandler = (sessionId: string, player: RemotePlayer) => void;
 export type LeaveHandler = (sessionId: string) => void;
 export type ChatHandler = (msg: ChatMessage) => void;
+export type HarvestableAddHandler = (id: string, h: RemoteHarvestable) => void;
+export type HarvestableChangeHandler = (id: string, h: RemoteHarvestable) => void;
+export type HarvestableRemoveHandler = (id: string) => void;
+export type HarvestDropHandler = (event: HarvestDropEvent) => void;
 
 export class NetworkManager {
   private client: Client;
@@ -28,6 +52,10 @@ export class NetworkManager {
   private addHandlers: PlayerHandler[] = [];
   private removeHandlers: LeaveHandler[] = [];
   private chatHandlers: ChatHandler[] = [];
+  private hAddHandlers: HarvestableAddHandler[] = [];
+  private hChangeHandlers: HarvestableChangeHandler[] = [];
+  private hRemoveHandlers: HarvestableRemoveHandler[] = [];
+  private hDropHandlers: HarvestDropHandler[] = [];
 
   constructor(endpoint: string) {
     this.client = new Client(endpoint);
@@ -41,22 +69,44 @@ export class NetworkManager {
       this.connected = true;
 
       const $ = getStateCallbacks(room);
-      const players = ($(room.state) as unknown as {
+      const state = $(room.state) as unknown as {
         players: {
           onAdd: (cb: (p: RemotePlayer, k: string) => void) => void;
           onRemove: (cb: (p: RemotePlayer, k: string) => void) => void;
         };
-      }).players;
+        harvestables: {
+          onAdd: (cb: (h: RemoteHarvestable, k: string) => void) => void;
+          onRemove: (cb: (h: RemoteHarvestable, k: string) => void) => void;
+        };
+      };
 
-      players.onAdd((player, sessionId) => {
+      state.players.onAdd((player, sessionId) => {
         for (const h of this.addHandlers) h(sessionId, player);
       });
-      players.onRemove((_player, sessionId) => {
+      state.players.onRemove((_player, sessionId) => {
         for (const h of this.removeHandlers) h(sessionId);
+      });
+
+      state.harvestables.onAdd((h, id) => {
+        for (const cb of this.hAddHandlers) cb(id, h);
+        // Per-instance change callback. The Colyseus typings here are loose; we
+        // cast through unknown to access the onChange hook the runtime exposes.
+        const node = $(h as unknown as object) as unknown as {
+          onChange: (cb: () => void) => void;
+        };
+        node.onChange(() => {
+          for (const cb of this.hChangeHandlers) cb(id, h);
+        });
+      });
+      state.harvestables.onRemove((_h, id) => {
+        for (const cb of this.hRemoveHandlers) cb(id);
       });
 
       room.onMessage<ChatMessage>("chat", (msg) => {
         for (const h of this.chatHandlers) h(msg);
+      });
+      room.onMessage<HarvestDropEvent>("harvest_drop", (msg) => {
+        for (const cb of this.hDropHandlers) cb(msg);
       });
 
       room.onLeave(() => {
@@ -91,6 +141,11 @@ export class NetworkManager {
     this.room.send("chat", { text });
   }
 
+  sendHarvest(id: string, toolId: string) {
+    if (!this.connected || !this.room) return;
+    this.room.send("harvest", { id, toolId });
+  }
+
   onPlayerAdd(cb: PlayerHandler) {
     this.addHandlers.push(cb);
   }
@@ -99,5 +154,17 @@ export class NetworkManager {
   }
   onChat(cb: ChatHandler) {
     this.chatHandlers.push(cb);
+  }
+  onHarvestableAdd(cb: HarvestableAddHandler) {
+    this.hAddHandlers.push(cb);
+  }
+  onHarvestableChange(cb: HarvestableChangeHandler) {
+    this.hChangeHandlers.push(cb);
+  }
+  onHarvestableRemove(cb: HarvestableRemoveHandler) {
+    this.hRemoveHandlers.push(cb);
+  }
+  onHarvestDrop(cb: HarvestDropHandler) {
+    this.hDropHandlers.push(cb);
   }
 }
