@@ -16,13 +16,23 @@ const MOVE_DELTA_THRESHOLD = 0.5;
 const SERVER_ENDPOINT =
   (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "ws://localhost:2567";
 
-// Kenney Tiny Town tileset frame indices (12 cols × 11 rows, 132 tiles)
+// Kenney Tiny Town tileset frame indices (12 cols × 11 rows, 132 tiles).
+// Only grass variants kept — trees and props now come from PixelLab.
 const GRASS_BASE = 0;
 const GRASS_TUFT = 1;
 const GRASS_FLOWER = 2;
-const TREE_FRAMES = [16, 18, 19, 20, 21, 22, 23];
-const DECORATION_FRAMES = [5, 17];
 const SPAWN_CLEAR_RADIUS = 5;
+
+// PixelLab props sheet (4x4 grid, 48px each)
+// Row 0: 0=smallOak, 1=mediumOak, 2=tallPine, 3=largeOak
+// Row 1: 4=autumnMaple, 5=cherryBlossom, 6=appleTree, 7=birch
+// Row 2: 8=deadTree, 9=smallBush, 10=largeBush, 11=boulder
+// Row 3: 12=smallRocks, 13=mushrooms, 14=stump, 15=wildflowers
+const PROP_FRAME = 48;
+// Collidable: all 9 trees + boulder + stump
+const TREE_FRAMES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 14];
+// Walk-through decorations
+const DECORATION_FRAMES = [9, 10, 12, 13, 15];
 
 // PixelLab character sprite sheets
 const PLAYER_FRAME = 60;
@@ -76,6 +86,10 @@ export class MainScene extends Phaser.Scene {
       frameWidth: TILE,
       frameHeight: TILE,
     });
+    this.load.spritesheet("props", "/assets/props/props.png", {
+      frameWidth: PROP_FRAME,
+      frameHeight: PROP_FRAME,
+    });
     this.load.spritesheet("player_walks", "/assets/characters/player_walks.png", {
       frameWidth: PLAYER_FRAME,
       frameHeight: PLAYER_FRAME,
@@ -110,7 +124,6 @@ export class MainScene extends Phaser.Scene {
         color: "#ffffff",
         backgroundColor: "rgba(0,0,0,0.55)",
         padding: { x: 4, y: 2 },
-        resolution: 2,
       })
       .setOrigin(0.5, 1)
       .setDepth(100000);
@@ -271,7 +284,6 @@ export class MainScene extends Phaser.Scene {
         color: "#cfe8ff",
         backgroundColor: "rgba(0,0,0,0.55)",
         padding: { x: 4, y: 2 },
-        resolution: 2,
       })
       .setOrigin(0.5, 1)
       .setDepth(p.y + 1);
@@ -441,7 +453,6 @@ export class MainScene extends Phaser.Scene {
         backgroundColor: "#ffffff",
         padding: { x: 5, y: 3 },
         wordWrap: { width: 140 },
-        resolution: 2,
       })
       .setOrigin(0.5, 1);
     return this.add.container(0, 0, [t]);
@@ -469,15 +480,15 @@ export class MainScene extends Phaser.Scene {
   private buildDecorations() {
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-decor"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 50; i++) {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
       if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
       const idx = DECORATION_FRAMES[rng.between(0, DECORATION_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
-      const sprite = this.add.sprite(wx, wy, "tinytown", idx);
-      sprite.setOrigin(0.5, 0.85);
+      const sprite = this.add.sprite(wx, wy, "props", idx);
+      sprite.setOrigin(0.5, 0.9);
       sprite.setDepth(wy - 1);
     }
   }
@@ -486,19 +497,18 @@ export class MainScene extends Phaser.Scene {
     const trees = this.physics.add.staticGroup();
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
-    const SCALE = 1.5;
-    for (let i = 0; i < 90; i++) {
+    for (let i = 0; i < 80; i++) {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
       if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
       const idx = TREE_FRAMES[rng.between(0, TREE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
-      const tree = trees.create(wx, wy, "tinytown", idx) as Phaser.Physics.Arcade.Sprite;
-      tree.setOrigin(0.5, 0.85);
-      tree.setScale(SCALE);
+      const tree = trees.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
+      tree.setOrigin(0.5, 0.9);
       const body = tree.body as Phaser.Physics.Arcade.StaticBody;
-      body.setSize(14, 8).setOffset(9, 20);
+      // 48x48 frame, trunk roughly at columns 18-30 rows 38-46
+      body.setSize(14, 6).setOffset(17, 38);
       tree.refreshBody();
       tree.setDepth(wy);
     }
