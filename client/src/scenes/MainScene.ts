@@ -68,7 +68,7 @@ interface LabelStyle {
   fontFamily?: string;
 }
 
-const LABEL_FONT_FAMILY = "Galmuri11, monospace";
+const LABEL_FONT_FAMILY = "PFStardust, Galmuri11, monospace";
 
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -124,7 +124,10 @@ export class MainScene extends Phaser.Scene {
     // the start; without this, the first labels would bake with the fallback
     // monospace font and only swap in after the font loads.
     try {
-      await document.fonts.load("11px Galmuri11");
+      await Promise.all([
+        document.fonts.load("12px PFStardust"),
+        document.fonts.load("11px Galmuri11"),
+      ]);
     } catch {
       // ignore — caller will fall back to monospace
     }
