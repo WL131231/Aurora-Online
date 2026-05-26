@@ -1,6 +1,15 @@
 import Phaser from "phaser";
 import { NetworkManager } from "../net/NetworkManager";
 import type { RemotePlayer } from "../net/NetworkManager";
+import {
+  DROP_FOR_RESOURCE,
+  ITEMS,
+  RESOURCE_BASE_HP,
+  RESOURCE_RESPAWN_MS,
+  TOOL_FOR_RESOURCE,
+  type ResourceType,
+} from "../game/items";
+import type { Hotbar, Inventory } from "../game/inventory";
 
 const TILE = 32;
 const MAP_W = 50;
@@ -8,6 +17,7 @@ const MAP_H = 50;
 const WORLD_W = MAP_W * TILE;
 const WORLD_H = MAP_H * TILE;
 const PLAYER_SPEED = 140;
+const RUN_SPEED = 230;
 const INV_SQRT2 = 1 / Math.SQRT2;
 
 const SEND_INTERVAL_MS = 80;
@@ -39,16 +49,27 @@ const DECORATION_FRAMES = [9, 10, 12, 13, 15];
 // PixelLab character sprite sheets
 const PLAYER_FRAME = 60;
 const WALK_FRAMES_PER_DIR = 6;
+const CHOP_FRAMES_PER_DIR = 8;
+
+// Distance threshold (px) for SPACE-key harvest pickup
+const HARVEST_RANGE = 56;
+// Delay between swing start and damage impact (matches mid-arc of chop anim).
+const SWING_IMPACT_MS = 220;
 // 8-direction order (PixelLab + our internal dir): 0=S, 1=SE, 2=E, 3=NE, 4=N, 5=NW, 6=W, 7=SW
 const DIR_KEYS = ["S", "SE", "E", "NE", "N", "NW", "W", "SW"] as const;
+// Chop sheets only have 4 cardinals, but N/S frames don't render the tool clearly.
+// Map N → S (front-facing chop) so the player always swings facing the camera
+// unless they're moving sideways. E/W keep their own sideview frames.
+const CARDINAL_KEYS = ["S", "E", "N", "W"] as const;
+const DIR_TO_CARDINAL = [0, 1, 1, 1, 0, 3, 3, 3];
+const CHOP_TOOLS = ["axe", "pickaxe"] as const;
 
-type WASDKeys = {
-  up: Phaser.Input.Keyboard.Key;
-  down: Phaser.Input.Keyboard.Key;
-  left: Phaser.Input.Keyboard.Key;
-  right: Phaser.Input.Keyboard.Key;
-  enter: Phaser.Input.Keyboard.Key;
-};
+// World spawn config for ore nodes. Counts scale rarity by tier.
+const ORE_NODES: Array<{ type: ResourceType; textureKey: string; count: number }> = [
+  { type: "copper_node", textureKey: "node_copper", count: 12 },
+  { type: "silver_node", textureKey: "node_silver", count: 6 },
+  { type: "gold_node", textureKey: "node_gold", count: 3 },
+];
 
 interface RemoteEntity {
   sprite: Phaser.GameObjects.Sprite;
@@ -73,9 +94,10 @@ const LABEL_FONT_FAMILY = "PFStardust, Galmuri11, monospace";
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private wasd!: WASDKeys;
+  private harvestKey!: Phaser.Input.Keyboard.Key;
+  private runKey!: Phaser.Input.Keyboard.Key;
   private nameTag!: Phaser.GameObjects.Image;
-  private trees!: Phaser.Physics.Arcade.StaticGroup;
+  private harvestables!: Phaser.GameObjects.Group;
 
   private net!: NetworkManager;
   private playerName = "Aurora";
@@ -93,6 +115,7 @@ export class MainScene extends Phaser.Scene {
   private chatLog: string[] = [];
   private bakedTextureCounter = 0;
   private ready = false;
+  private swinging = false;
 
   constructor() {
     super("MainScene");
@@ -115,6 +138,28 @@ export class MainScene extends Phaser.Scene {
       frameWidth: PLAYER_FRAME,
       frameHeight: PLAYER_FRAME,
     });
+    this.load.spritesheet("player_runs", "/assets/characters/player_runs.png", {
+      frameWidth: PLAYER_FRAME,
+      frameHeight: PLAYER_FRAME,
+    });
+    for (const item of Object.values(ITEMS)) {
+      if (item.iconUrl) this.load.image(`item_${item.id}`, item.iconUrl);
+    }
+    for (const ore of ORE_NODES) {
+      this.load.image(ore.textureKey, `/assets/props/${ore.textureKey}.png`);
+    }
+    for (const tool of CHOP_TOOLS) {
+      this.load.spritesheet(`player_chop_${tool}`, `/assets/characters/player_chop_${tool}.png`, {
+        frameWidth: PLAYER_FRAME,
+        frameHeight: PLAYER_FRAME,
+      });
+    }
+    // Missing optional sheets fall back gracefully (chop → tool overlay, runs → walk).
+    this.load.on(Phaser.Loader.Events.FILE_LOAD_ERROR, (file: Phaser.Loader.File) => {
+      if (file.key === "player_runs" || file.key.startsWith("player_chop_")) {
+        console.info(`[anim] missing ${file.key} — falling back`);
+      }
+    });
   }
 
   async create() {
@@ -134,7 +179,7 @@ export class MainScene extends Phaser.Scene {
 
     this.buildGroundLayer();
     this.buildDecorations();
-    this.trees = this.buildTrees();
+    this.harvestables = this.buildHarvestables();
     this.createPlayerAnimations();
 
     const spawnX = WORLD_W / 2;
@@ -144,7 +189,6 @@ export class MainScene extends Phaser.Scene {
     this.player.setCollideWorldBounds(true);
     const pbody = this.player.body as Phaser.Physics.Arcade.Body;
     pbody.setSize(20, 8).setOffset(20, 46);
-    this.physics.add.collider(this.player, this.trees);
 
     const nameTagKey = this.bakeLabel(this.playerName, {
       color: "#ffffff",
@@ -162,13 +206,9 @@ export class MainScene extends Phaser.Scene {
     this.cameras.main.setRoundPixels(true);
 
     this.cursors = this.input.keyboard!.createCursorKeys();
-    this.wasd = this.input.keyboard!.addKeys({
-      up: Phaser.Input.Keyboard.KeyCodes.W,
-      down: Phaser.Input.Keyboard.KeyCodes.S,
-      left: Phaser.Input.Keyboard.KeyCodes.A,
-      right: Phaser.Input.Keyboard.KeyCodes.D,
-      enter: Phaser.Input.Keyboard.KeyCodes.ENTER,
-    }) as WASDKeys;
+    this.harvestKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    this.harvestKey.on("down", () => this.tryHarvest());
+    this.runKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
 
     this.setupHud();
     this.setupChatInput();
@@ -193,17 +233,27 @@ export class MainScene extends Phaser.Scene {
 
   update(time: number) {
     if (!this.ready) return;
+    if (this.swinging) {
+      this.player.setVelocity(0, 0);
+      this.nameTag.setPosition(this.player.x, this.player.y - 5);
+      this.syncRemotes();
+      this.maybeSendMove(time, false);
+      return;
+    }
     let vx = 0;
     let vy = 0;
-    if (this.cursors.left?.isDown || this.wasd.left.isDown) vx -= 1;
-    if (this.cursors.right?.isDown || this.wasd.right.isDown) vx += 1;
-    if (this.cursors.up?.isDown || this.wasd.up.isDown) vy -= 1;
-    if (this.cursors.down?.isDown || this.wasd.down.isDown) vy += 1;
+    if (this.cursors.left?.isDown) vx -= 1;
+    if (this.cursors.right?.isDown) vx += 1;
+    if (this.cursors.up?.isDown) vy -= 1;
+    if (this.cursors.down?.isDown) vy += 1;
     if (vx !== 0 && vy !== 0) {
       vx *= INV_SQRT2;
       vy *= INV_SQRT2;
     }
-    this.player.setVelocity(vx * PLAYER_SPEED, vy * PLAYER_SPEED);
+    const moving = vx !== 0 || vy !== 0;
+    const running = moving && this.runKey.isDown;
+    const speed = running ? RUN_SPEED : PLAYER_SPEED;
+    this.player.setVelocity(vx * speed, vy * speed);
 
     const sx = vx === 0 ? 0 : vx < 0 ? -1 : 1;
     const sy = vy === 0 ? 0 : vy < 0 ? -1 : 1;
@@ -218,8 +268,7 @@ export class MainScene extends Phaser.Scene {
     // which is what produced the nameplate jitter.
     this.nameTag.setPosition(this.player.x, this.player.y - 5);
 
-    const moving = vx !== 0 || vy !== 0;
-    this.applyPlayerAnimation(this.player, this.dir, moving);
+    this.applyPlayerAnimation(this.player, this.dir, moving, running);
 
     this.syncRemotes();
     this.maybeSendMove(time, moving);
@@ -239,16 +288,47 @@ export class MainScene extends Phaser.Scene {
         repeat: -1,
       });
     }
+    if (this.textures.exists("player_runs")) {
+      for (let dir = 0; dir < DIR_KEYS.length; dir++) {
+        this.anims.create({
+          key: `run_${DIR_KEYS[dir]}`,
+          frames: this.anims.generateFrameNumbers("player_runs", {
+            start: dir * WALK_FRAMES_PER_DIR,
+            end: dir * WALK_FRAMES_PER_DIR + WALK_FRAMES_PER_DIR - 1,
+          }),
+          frameRate: 14,
+          repeat: -1,
+        });
+      }
+    }
+    for (const tool of CHOP_TOOLS) {
+      const sheet = `player_chop_${tool}`;
+      if (!this.textures.exists(sheet)) continue;
+      for (let dir = 0; dir < CARDINAL_KEYS.length; dir++) {
+        this.anims.create({
+          key: `chop_${tool}_${CARDINAL_KEYS[dir]}`,
+          frames: this.anims.generateFrameNumbers(sheet, {
+            start: dir * CHOP_FRAMES_PER_DIR,
+            end: dir * CHOP_FRAMES_PER_DIR + CHOP_FRAMES_PER_DIR - 1,
+          }),
+          frameRate: 18,
+          repeat: 0,
+        });
+      }
+    }
   }
 
   private applyPlayerAnimation(
     sprite: Phaser.GameObjects.Sprite,
     dir: number,
-    moving: boolean
+    moving: boolean,
+    running = false
   ) {
     const clampedDir = dir >= 0 && dir < DIR_KEYS.length ? dir : 0;
     if (moving) {
-      const key = `walk_${DIR_KEYS[clampedDir]}`;
+      const runKey = `run_${DIR_KEYS[clampedDir]}`;
+      const useRun = running && this.anims.exists(runKey);
+      const key = useRun ? runKey : `walk_${DIR_KEYS[clampedDir]}`;
       // Replay if direction changed OR if the anim is currently stopped.
       // Previously we only checked key change, which meant releasing a key
       // and pressing it again kept currentAnim.key === target but isPlaying
@@ -361,7 +441,7 @@ export class MainScene extends Phaser.Scene {
       .setDepth(100001);
 
     this.add
-      .text(8, 540 - 8, "[Enter] 채팅  |  WASD / 화살표 이동", {
+      .text(8, 540 - 8, "[방향키] 이동  ·  [Shift] 달리기  ·  [Space] 채취  ·  [I] 인벤토리  ·  [Enter] 채팅", {
         fontFamily: "monospace",
         fontSize: "9px",
         color: "#aaaaaa",
@@ -601,12 +681,11 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  private buildTrees(): Phaser.Physics.Arcade.StaticGroup {
-    const group = this.physics.add.staticGroup();
+  private buildHarvestables(): Phaser.GameObjects.Group {
+    const group = this.add.group();
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
 
-    // Trees (scaled 1.5x)
     for (let i = 0; i < 80; i++) {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
@@ -614,16 +693,15 @@ export class MainScene extends Phaser.Scene {
       const idx = TREE_FRAMES[rng.between(0, TREE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
-      const tree = group.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
+      const tree = this.add.sprite(wx, wy, "props", idx);
       tree.setOrigin(0.5, 0.9);
       tree.setScale(1.75);
-      const body = tree.body as Phaser.Physics.Arcade.StaticBody;
-      body.setSize(14, 6).setOffset(17, 38);
-      tree.refreshBody();
       tree.setDepth(wy);
+      this.markHarvestable(tree, "tree");
+      group.add(tree);
     }
 
-    // Rocks and stumps (native size, no scaling)
+    // Boulders are rock-harvestable; stumps remain props (already harvested).
     for (let i = 0; i < 25; i++) {
       const tx = rng.between(1, MAP_W - 2);
       const ty = rng.between(1, MAP_H - 2);
@@ -631,17 +709,246 @@ export class MainScene extends Phaser.Scene {
       const idx = OBSTACLE_FRAMES[rng.between(0, OBSTACLE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
-      const obs = group.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
-      obs.setOrigin(0.5, 0.9);
-      const body = obs.body as Phaser.Physics.Arcade.StaticBody;
-      body.setSize(28, 12).setOffset(10, 32);
-      obs.refreshBody();
-      obs.setDepth(wy);
+      const sprite = this.add.sprite(wx, wy, "props", idx);
+      sprite.setOrigin(0.5, 0.9);
+      sprite.setDepth(wy);
+      if (idx === 11) {
+        this.markHarvestable(sprite, "rock");
+        group.add(sprite);
+      }
+      // stumps stay as scenery
+    }
+
+    // Ore nodes (copper / silver / gold) — only if textures loaded successfully.
+    for (const ore of ORE_NODES) {
+      if (!this.textures.exists(ore.textureKey)) continue;
+      for (let i = 0; i < ore.count; i++) {
+        const tx = rng.between(1, MAP_W - 2);
+        const ty = rng.between(1, MAP_H - 2);
+        if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+        const wx = tx * TILE + TILE / 2;
+        const wy = ty * TILE + TILE / 2;
+        const sprite = this.add.sprite(wx, wy, ore.textureKey);
+        sprite.setOrigin(0.5, 0.9);
+        sprite.setDepth(wy);
+        this.markHarvestable(sprite, ore.type);
+        group.add(sprite);
+      }
     }
 
     return group;
   }
 
+  // Attach harvest metadata + remember initial scale so respawn can reset it
+  // even after the death tween squashed the sprite.
+  private markHarvestable(sprite: Phaser.GameObjects.Sprite, type: ResourceType) {
+    sprite.setData("resourceType", type);
+    sprite.setData("hp", RESOURCE_BASE_HP[type]);
+    sprite.setData("baseScaleY", sprite.scaleY);
+  }
+
+  private tryHarvest() {
+    if (this.swinging) return;
+    const hotbar = this.registry.get("hotbar") as Hotbar | undefined;
+    const inventory = this.registry.get("inventory") as Inventory | undefined;
+    if (!hotbar || !inventory) return;
+    const tool = hotbar.getSelected();
+    if (!tool || tool.kind !== "tool") return;
+
+    const targetTypes = new Set<ResourceType>();
+    for (const [rtype, requiredTool] of Object.entries(TOOL_FOR_RESOURCE) as Array<[ResourceType, string]>) {
+      if (requiredTool === tool.id) targetTypes.add(rtype);
+    }
+
+    const px = this.player.x;
+    const py = this.player.y;
+    let nearest: Phaser.GameObjects.Sprite | null = null;
+    if (targetTypes.size > 0) {
+      let nearestDist = HARVEST_RANGE;
+      for (const obj of this.harvestables.getChildren()) {
+        const sprite = obj as Phaser.GameObjects.Sprite;
+        if (!sprite.active || !sprite.visible) continue;
+        if (!targetTypes.has(sprite.getData("resourceType") as ResourceType)) continue;
+        const dx = sprite.x - px;
+        const dy = sprite.y - py;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < nearestDist) {
+          nearest = sprite;
+          nearestDist = dist;
+        }
+      }
+    }
+
+    if (nearest) {
+      const ndx = nearest.x - this.player.x;
+      const ndy = nearest.y - this.player.y;
+      if (Math.abs(ndx) > Math.abs(ndy)) {
+        this.dir = ndx > 0 ? 2 : 6;
+      } else {
+        this.dir = ndy > 0 ? 0 : 4;
+      }
+    }
+
+    const playedChar = this.playCharacterSwing(tool.id);
+    if (!playedChar) this.playSwing(tool.id, nearest);
+
+    if (nearest) {
+      this.time.delayedCall(SWING_IMPACT_MS, () => {
+        if (nearest && nearest.scene && nearest.active) {
+          this.damageHarvestable(nearest, inventory);
+        }
+      });
+    }
+  }
+
+  // Returns true if the chop sprite-sheet was available and the character anim is playing.
+  private playCharacterSwing(toolId: string): boolean {
+    const cardinalIdx = DIR_TO_CARDINAL[this.dir] ?? 0;
+    const animKey = `chop_${toolId}_${CARDINAL_KEYS[cardinalIdx]}`;
+    if (!this.anims.exists(animKey)) return false;
+    this.swinging = true;
+    this.player.anims.stop();
+    this.player.play(animKey);
+    this.player.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+      this.swinging = false;
+    });
+    return true;
+  }
+
+  // Direction-aware tool swing overlay. Renders the tool icon in front of the
+  // player and sweeps it through an arc — temporary until the PixelLab
+  // "Picking Up" character animation lands.
+  private playSwing(toolId: string, target: Phaser.GameObjects.Sprite | null) {
+    const key = `item_${toolId}`;
+    if (!this.textures.exists(key)) return;
+
+    // Direction toward target if any, else use player facing.
+    let dx: number;
+    let dy: number;
+    if (target) {
+      const vx = target.x - this.player.x;
+      const vy = target.y - this.player.y;
+      const len = Math.max(0.001, Math.sqrt(vx * vx + vy * vy));
+      dx = vx / len;
+      dy = vy / len;
+    } else {
+      const DX = [0, 0.7, 1, 0.7, 0, -0.7, -1, -0.7];
+      const DY = [1, 0.7, 0, -0.7, -1, -0.7, 0, 0.7];
+      dx = DX[this.dir] ?? 0;
+      dy = DY[this.dir] ?? 0;
+    }
+    const facingLeft = dx < -0.05;
+
+    const handX = this.player.x + dx * 10;
+    const handY = this.player.y - 14 + dy * 6;
+    const tool = this.add.image(handX, handY, key);
+    tool.setDepth(this.player.y + 2);
+    tool.setScale(0.75);
+    tool.setFlipX(facingLeft);
+
+    const base = facingLeft ? Math.PI : 0;
+    const startRot = base + (facingLeft ? Math.PI * 0.55 : -Math.PI * 0.55);
+    const endRot = base + (facingLeft ? -Math.PI * 0.25 : Math.PI * 0.25);
+    tool.setRotation(startRot);
+
+    this.tweens.add({
+      targets: tool,
+      rotation: endRot,
+      x: this.player.x + dx * 18,
+      y: this.player.y - 8 + dy * 10,
+      duration: 220,
+      ease: "Cubic.easeOut",
+      onComplete: () => {
+        this.tweens.add({
+          targets: tool,
+          alpha: 0,
+          duration: 80,
+          onComplete: () => tool.destroy(),
+        });
+      },
+    });
+  }
+
+  private damageHarvestable(sprite: Phaser.GameObjects.Sprite, inventory: Inventory) {
+    const type = sprite.getData("resourceType") as ResourceType;
+    const hp = (sprite.getData("hp") as number) - 1;
+
+    sprite.setTint(0xff8a8a);
+    this.time.delayedCall(90, () => sprite.clearTint());
+    const baseX = sprite.x;
+    this.tweens.add({
+      targets: sprite,
+      x: baseX + 3,
+      duration: 40,
+      yoyo: true,
+      repeat: 1,
+      onComplete: () => sprite.setX(baseX),
+    });
+
+    if (hp <= 0) {
+      const dropId = DROP_FOR_RESOURCE[type];
+      const dropX = sprite.x;
+      const dropY = sprite.y - sprite.displayHeight * 0.4;
+      const baseScaleY = (sprite.getData("baseScaleY") as number) ?? sprite.scaleY;
+      const baseHp = RESOURCE_BASE_HP[type];
+      const respawnMs = RESOURCE_RESPAWN_MS[type];
+
+      this.tweens.add({
+        targets: sprite,
+        alpha: 0,
+        scaleY: baseScaleY * 0.6,
+        duration: 220,
+        onComplete: () => {
+          sprite.setActive(false).setVisible(false);
+          // Reset visual state so respawn shows the node intact, not the squashed corpse.
+          sprite.setAlpha(1);
+          sprite.setScale(sprite.scaleX, baseScaleY);
+          sprite.setData("hp", baseHp);
+        },
+      });
+      this.spawnDropParticle(dropX, dropY, dropId, inventory);
+
+      this.time.delayedCall(respawnMs, () => {
+        if (!sprite.scene) return;
+        sprite.setActive(true).setVisible(true);
+      });
+    } else {
+      sprite.setData("hp", hp);
+    }
+  }
+
+  private spawnDropParticle(x: number, y: number, itemId: string, inventory: Inventory) {
+    const key = `item_${itemId}`;
+    if (!this.textures.exists(key)) {
+      inventory.add(itemId, 1);
+      return;
+    }
+    const drop = this.add.image(x, y, key);
+    drop.setDepth(99999);
+    drop.setScale(0.6);
+    this.tweens.add({
+      targets: drop,
+      y: y - 16,
+      scale: 0.8,
+      duration: 220,
+      ease: "Sine.easeOut",
+      onComplete: () => {
+        this.tweens.add({
+          targets: drop,
+          x: this.player.x,
+          y: this.player.y - 12,
+          scale: 0.35,
+          alpha: 0.4,
+          duration: 320,
+          ease: "Cubic.easeIn",
+          onComplete: () => {
+            drop.destroy();
+            inventory.add(itemId, 1);
+          },
+        });
+      },
+    });
+  }
 }
 
 // Maps a unit-vector (sx, sy) to a direction index matching DIR_KEYS.

@@ -62,3 +62,137 @@ canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
+
+/* HUD overlay (DOM, sits above Phaser canvas) */
+.aurora-hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  font-family: "Galmuri11", monospace;
+  image-rendering: pixelated;
+}
+.aurora-hud > * {
+  pointer-events: auto;
+}
+
+/* Hotbar — dark wood plank with embossed frame */
+.aurora-hotbar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  background: linear-gradient(180deg, #6b421c 0%, #4a2c10 100%);
+  border: 2px solid #2a1808;
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 1px #8b5a2a inset,
+    0 4px 0 #1a0e04,
+    0 8px 16px rgba(0, 0, 0, 0.5);
+}
+
+/* Slot — warm parchment cell with brown frame */
+.aurora-slot {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  background: radial-gradient(ellipse at 30% 30%, #ead8a8 0%, #c8b07a 80%, #b09864 100%);
+  border: 2px solid #5a3a1a;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 0 0 1px #f0e0b0,
+    inset 0 -8px 12px rgba(90, 58, 26, 0.15);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 60ms ease;
+  user-select: none;
+}
+.aurora-slot:hover {
+  transform: translateY(-1px);
+}
+.aurora-slot.selected {
+  border-color: #ffd966;
+  box-shadow:
+    inset 0 0 0 1px #fff0a8,
+    inset 0 -8px 12px rgba(90, 58, 26, 0.15),
+    0 0 8px 1px #ffd966;
+}
+.aurora-slot .slot-hotkey {
+  position: absolute;
+  left: 3px;
+  top: 1px;
+  font-size: 10px;
+  color: #5a3a1a;
+  line-height: 1;
+  pointer-events: none;
+}
+.aurora-slot .slot-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  line-height: 1;
+  pointer-events: none;
+  font-family: system-ui, "Segoe UI Emoji", "Apple Color Emoji", sans-serif;
+}
+.aurora-slot .slot-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+.aurora-slot .slot-count {
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font-size: 11px;
+  color: #fff;
+  text-shadow: 1px 1px 0 #000, -1px 0 0 #000, 0 -1px 0 #000, 1px 0 0 #000, 0 1px 0 #000;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* Inventory panel — centered parchment scroll */
+.aurora-inventory {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 296px;
+  padding: 16px 20px 14px;
+  background: radial-gradient(ellipse at center, #f5e3b8 0%, #e2cc91 70%, #c8ae6d 100%);
+  border: 3px solid #3a230f;
+  border-radius: 8px;
+  box-shadow:
+    inset 0 0 0 1px #8b5a2a,
+    inset 0 0 18px rgba(120, 80, 30, 0.3),
+    0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.aurora-inventory.hidden {
+  display: none;
+}
+.aurora-inventory-title {
+  text-align: center;
+  font-size: 14px;
+  color: #2a1808;
+  margin-bottom: 10px;
+  letter-spacing: 1px;
+}
+.aurora-inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 48px);
+  gap: 5px;
+}
+.aurora-inventory-hint {
+  text-align: center;
+  font-size: 10px;
+  color: #5a3a1a;
+  margin-top: 10px;
+}
