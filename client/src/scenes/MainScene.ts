@@ -60,11 +60,15 @@ interface RemoteEntity {
 
 interface LabelStyle {
   color: string;
-  backgroundColor: string;
+  background?: string;
+  stroke?: { color: string; width: number };
   fontSize?: number;
   padX?: number;
   padY?: number;
+  fontFamily?: string;
 }
+
+const LABEL_FONT_FAMILY = "Galmuri11, monospace";
 
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -115,6 +119,15 @@ export class MainScene extends Phaser.Scene {
   async create() {
     this.playerName = pickName();
 
+    // Block on font load so canvas-baked labels render with Galmuri11 from
+    // the start; without this, the first labels would bake with the fallback
+    // monospace font and only swap in after the font loads.
+    try {
+      await document.fonts.load("11px Galmuri11");
+    } catch {
+      // ignore — caller will fall back to monospace
+    }
+
     this.buildGroundLayer();
     this.buildDecorations();
     this.trees = this.buildTrees();
@@ -131,7 +144,8 @@ export class MainScene extends Phaser.Scene {
 
     const nameTagKey = this.bakeLabel(this.playerName, {
       color: "#ffffff",
-      backgroundColor: "rgba(0,0,0,0.55)",
+      stroke: { color: "#000000", width: 3 },
+      fontSize: 11,
     });
     this.nameTag = this.add
       .image(spawnX, spawnY + 10, nameTagKey)
@@ -194,9 +208,10 @@ export class MainScene extends Phaser.Scene {
     }
 
     this.player.setDepth(this.player.y);
-    const nameX = Math.round(this.player.x);
-    const nameY = Math.round(this.player.y + 10);
-    this.nameTag.setPosition(nameX, nameY);
+    // No Math.round here — camera.setRoundPixels(true) handles screen snapping.
+    // Rounding world coords causes 1px jumps that don't align with camera scrolling,
+    // which is what produced the nameplate jitter.
+    this.nameTag.setPosition(this.player.x, this.player.y + 10);
 
     const moving = vx !== 0 || vy !== 0;
     this.applyPlayerAnimation(this.player, this.dir, moving);
@@ -229,7 +244,11 @@ export class MainScene extends Phaser.Scene {
     const clampedDir = dir >= 0 && dir < DIR_KEYS.length ? dir : 0;
     if (moving) {
       const key = `walk_${DIR_KEYS[clampedDir]}`;
-      if (sprite.anims.currentAnim?.key !== key) {
+      // Replay if direction changed OR if the anim is currently stopped.
+      // Previously we only checked key change, which meant releasing a key
+      // and pressing it again kept currentAnim.key === target but isPlaying
+      // was false — the character moved without animating.
+      if (sprite.anims.currentAnim?.key !== key || !sprite.anims.isPlaying) {
         sprite.play(key, true);
       }
       return;
@@ -268,13 +287,11 @@ export class MainScene extends Phaser.Scene {
       ent.sprite.x = Phaser.Math.Linear(ent.sprite.x, p.x, lerp);
       ent.sprite.y = Phaser.Math.Linear(ent.sprite.y, p.y, lerp);
       ent.sprite.setDepth(ent.sprite.y);
-      const nx = Math.round(ent.sprite.x);
-      const ny = Math.round(ent.sprite.y + 10);
-      ent.nameTag.setPosition(nx, ny);
+      ent.nameTag.setPosition(ent.sprite.x, ent.sprite.y + 10);
       ent.nameTag.setDepth(ent.sprite.y + 1);
       this.applyPlayerAnimation(ent.sprite, p.dir | 0, !!p.moving);
       if (ent.chatBubble) {
-        ent.chatBubble.setPosition(Math.round(ent.sprite.x), Math.round(ent.sprite.y - ent.sprite.displayHeight - 8));
+        ent.chatBubble.setPosition(ent.sprite.x, ent.sprite.y - ent.sprite.displayHeight - 8);
         ent.chatBubble.setDepth(ent.sprite.y + 2);
       }
     }
@@ -289,7 +306,8 @@ export class MainScene extends Phaser.Scene {
     sprite.setDepth(p.y);
     const nameTagKey = this.bakeLabel(p.name, {
       color: "#cfe8ff",
-      backgroundColor: "rgba(0,0,0,0.55)",
+      stroke: { color: "#000000", width: 3 },
+      fontSize: 11,
     });
     const nameTag = this.add
       .image(p.x, p.y + 10, nameTagKey)
@@ -455,7 +473,7 @@ export class MainScene extends Phaser.Scene {
   private makeBubble(text: string): Phaser.GameObjects.Container {
     const key = this.bakeLabel(text, {
       color: "#000000",
-      backgroundColor: "#ffffff",
+      background: "#ffffff",
       padX: 5,
       padY: 3,
     });
@@ -464,33 +482,59 @@ export class MainScene extends Phaser.Scene {
   }
 
   private bakeLabel(text: string, style: LabelStyle): string {
-    const fontSize = style.fontSize ?? 12;
-    const padX = style.padX ?? 4;
-    const padY = style.padY ?? 2;
+    const fontSize = style.fontSize ?? 11;
+    const padX = style.padX ?? 3;
+    const padY = style.padY ?? 1;
+    const fontFamily = style.fontFamily ?? LABEL_FONT_FAMILY;
+    const strokeW = style.stroke?.width ?? 0;
     const key = `label-${this.bakedTextureCounter++}`;
 
-    const font = `${fontSize}px monospace`;
+    const font = `${fontSize}px ${fontFamily}`;
     const measure = document.createElement("canvas").getContext("2d")!;
     measure.font = font;
     const lines = text.split("\n");
     const lineW = Math.ceil(Math.max(...lines.map((s) => measure.measureText(s).width)));
     const lineH = fontSize + 2;
-    const w = lineW + padX * 2;
-    const h = lineH * lines.length + padY * 2;
+    const w = lineW + padX * 2 + strokeW * 2;
+    const h = lineH * lines.length + padY * 2 + strokeW * 2;
 
     const c = document.createElement("canvas");
     c.width = w;
     c.height = h;
     const ctx = c.getContext("2d")!;
     ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = style.backgroundColor;
-    ctx.fillRect(0, 0, w, h);
+
+    if (style.background) {
+      ctx.fillStyle = style.background;
+      ctx.fillRect(0, 0, w, h);
+    }
+
     ctx.font = font;
     ctx.textBaseline = "top";
-    ctx.fillStyle = style.color;
     lines.forEach((line, i) => {
-      ctx.fillText(line, padX, padY + i * lineH);
+      const x = padX + strokeW;
+      const y = padY + strokeW + i * lineH;
+      if (style.stroke) {
+        ctx.strokeStyle = style.stroke.color;
+        ctx.lineWidth = style.stroke.width;
+        ctx.lineJoin = "round";
+        ctx.miterLimit = 2;
+        ctx.strokeText(line, x, y);
+      }
+      ctx.fillStyle = style.color;
+      ctx.fillText(line, x, y);
     });
+
+    // Threshold the alpha channel — any pixel with alpha > 127 becomes fully
+    // opaque, otherwise fully transparent. This removes the sub-pixel
+    // anti-aliased edges that canvas font rendering bakes in, which were
+    // showing up as a 1-2px ghost trail when the sprite moved.
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+    for (let i = 3; i < data.length; i += 4) {
+      data[i] = data[i] > 127 ? 255 : 0;
+    }
+    ctx.putImageData(imageData, 0, 0);
 
     this.textures.addCanvas(key, c);
     return key;
@@ -546,7 +590,7 @@ export class MainScene extends Phaser.Scene {
       const wy = ty * TILE + TILE / 2;
       const tree = group.create(wx, wy, "props", idx) as Phaser.Physics.Arcade.Sprite;
       tree.setOrigin(0.5, 0.9);
-      tree.setScale(1.5);
+      tree.setScale(1.75);
       const body = tree.body as Phaser.Physics.Arcade.StaticBody;
       body.setSize(14, 6).setOffset(17, 38);
       tree.refreshBody();
