@@ -16,6 +16,14 @@ const MOVE_DELTA_THRESHOLD = 0.5;
 const SERVER_ENDPOINT =
   (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "ws://localhost:2567";
 
+// Kenney Tiny Town tileset frame indices (12 cols × 11 rows, 132 tiles)
+const GRASS_BASE = 0;
+const GRASS_TUFT = 1;
+const GRASS_FLOWER = 2;
+const TREE_FRAMES = [4, 6, 7, 8, 9, 10, 11];
+const DECORATION_FRAMES = [5];
+const SPAWN_CLEAR_RADIUS = 5;
+
 type WASDKeys = {
   up: Phaser.Input.Keyboard.Key;
   down: Phaser.Input.Keyboard.Key;
@@ -58,31 +66,20 @@ export class MainScene extends Phaser.Scene {
   }
 
   preload() {
-    this.makeGrassTexture();
+    this.load.spritesheet("tinytown", "/assets/tilesets/tinytown.png", {
+      frameWidth: TILE,
+      frameHeight: TILE,
+    });
     this.makePlayerTexture("player", 0xd83b3b);
     this.makePlayerTexture("playerRemote", 0x3b78d8);
-    this.makeTreeTexture();
   }
 
   async create() {
     this.playerName = pickName();
 
-    this.add.tileSprite(0, 0, WORLD_W, WORLD_H, "grass").setOrigin(0, 0);
-
-    this.trees = this.physics.add.staticGroup();
-    const rng = new Phaser.Math.RandomDataGenerator(["aurora-online-day2"]);
-    for (let i = 0; i < 80; i++) {
-      const tx = rng.between(2, MAP_W - 3);
-      const ty = rng.between(2, MAP_H - 3);
-      const x = tx * TILE + TILE / 2;
-      const y = ty * TILE + TILE / 2;
-      const tree = this.trees.create(x, y, "tree") as Phaser.Physics.Arcade.Sprite;
-      tree.setOrigin(0.5, 0.85);
-      const body = tree.body as Phaser.Physics.Arcade.StaticBody;
-      body.setSize(20, 14).setOffset(6, 34);
-      tree.refreshBody();
-      tree.setDepth(y);
-    }
+    this.buildGroundLayer();
+    this.buildDecorations();
+    this.trees = this.buildTrees();
 
     const spawnX = WORLD_W / 2;
     const spawnY = WORLD_H / 2;
@@ -391,24 +388,60 @@ export class MainScene extends Phaser.Scene {
     return this.add.container(0, 0, [t]);
   }
 
-  private makeGrassTexture() {
-    const g = this.add.graphics({ x: 0, y: 0 });
-    g.fillStyle(0x5da130, 1);
-    g.fillRect(0, 0, TILE, TILE);
-    g.fillStyle(0x4a8328, 1);
-    for (let i = 0; i < 8; i++) {
-      const x = Phaser.Math.Between(2, TILE - 4);
-      const y = Phaser.Math.Between(2, TILE - 4);
-      g.fillRect(x, y, 2, 2);
+  private buildGroundLayer() {
+    const rng = new Phaser.Math.RandomDataGenerator(["aurora-ground"]);
+    const data: number[][] = [];
+    for (let y = 0; y < MAP_H; y++) {
+      const row: number[] = [];
+      for (let x = 0; x < MAP_W; x++) {
+        const r = rng.frac();
+        row.push(r < 0.85 ? GRASS_BASE : r < 0.93 ? GRASS_TUFT : GRASS_FLOWER);
+      }
+      data.push(row);
     }
-    g.fillStyle(0x6dbb3a, 1);
-    for (let i = 0; i < 4; i++) {
-      const x = Phaser.Math.Between(1, TILE - 2);
-      const y = Phaser.Math.Between(1, TILE - 2);
-      g.fillRect(x, y, 1, 1);
+    const map = this.make.tilemap({ data, tileWidth: TILE, tileHeight: TILE });
+    const tileset = map.addTilesetImage("tinytown", "tinytown", TILE, TILE, 0, 0);
+    if (tileset) {
+      const layer = map.createLayer(0, tileset, 0, 0);
+      layer?.setDepth(-1000);
     }
-    g.generateTexture("grass", TILE, TILE);
-    g.destroy();
+  }
+
+  private buildDecorations() {
+    const rng = new Phaser.Math.RandomDataGenerator(["aurora-decor"]);
+    const center = { x: MAP_W / 2, y: MAP_H / 2 };
+    for (let i = 0; i < 40; i++) {
+      const tx = rng.between(1, MAP_W - 2);
+      const ty = rng.between(1, MAP_H - 2);
+      if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+      const idx = DECORATION_FRAMES[rng.between(0, DECORATION_FRAMES.length - 1)];
+      const wx = tx * TILE + TILE / 2;
+      const wy = ty * TILE + TILE / 2;
+      const sprite = this.add.sprite(wx, wy, "tinytown", idx);
+      sprite.setOrigin(0.5, 0.85);
+      sprite.setDepth(wy - 1);
+    }
+  }
+
+  private buildTrees(): Phaser.Physics.Arcade.StaticGroup {
+    const trees = this.physics.add.staticGroup();
+    const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
+    const center = { x: MAP_W / 2, y: MAP_H / 2 };
+    for (let i = 0; i < 90; i++) {
+      const tx = rng.between(1, MAP_W - 2);
+      const ty = rng.between(1, MAP_H - 2);
+      if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+      const idx = TREE_FRAMES[rng.between(0, TREE_FRAMES.length - 1)];
+      const wx = tx * TILE + TILE / 2;
+      const wy = ty * TILE + TILE / 2;
+      const tree = trees.create(wx, wy, "tinytown", idx) as Phaser.Physics.Arcade.Sprite;
+      tree.setOrigin(0.5, 0.85);
+      const body = tree.body as Phaser.Physics.Arcade.StaticBody;
+      body.setSize(18, 10).setOffset(7, 18);
+      tree.refreshBody();
+      tree.setDepth(wy);
+    }
+    return trees;
   }
 
   private makePlayerTexture(key: string, bodyColor: number) {
@@ -439,25 +472,6 @@ export class MainScene extends Phaser.Scene {
     g.destroy();
   }
 
-  private makeTreeTexture() {
-    const W = 32;
-    const H = 48;
-    const g = this.add.graphics({ x: 0, y: 0 });
-    g.fillStyle(0x6b4226, 1);
-    g.fillRect(13, 30, 6, 16);
-    g.fillStyle(0x4a2e1a, 1);
-    g.fillRect(13, 30, 2, 16);
-    g.fillStyle(0x2e7d2e, 1);
-    g.fillCircle(16, 18, 14);
-    g.fillStyle(0x3a9d3a, 1);
-    g.fillCircle(12, 14, 7);
-    g.fillCircle(21, 16, 6);
-    g.fillStyle(0x4fb84f, 1);
-    g.fillCircle(14, 12, 3);
-    g.fillCircle(20, 13, 3);
-    g.generateTexture("tree", W, H);
-    g.destroy();
-  }
 }
 
 function pickName(): string {

@@ -16,8 +16,9 @@ Thumbs.db
 *.log
 logs/
 
-# Node (root level, in case anything spills outside subpackages)
+# Node
 node_modules/
 dist/
 
-# Future: server / shared packages will have their own .gitignore
+# Build/asset workspace
+.tmp/
