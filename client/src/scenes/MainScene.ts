@@ -24,6 +24,12 @@ const TREE_FRAMES = [4, 6, 7, 8, 9, 10, 11];
 const DECORATION_FRAMES = [5];
 const SPAWN_CLEAR_RADIUS = 5;
 
+// PixelLab character sprite sheets
+const PLAYER_FRAME = 60;
+// dir convention: 0=S, 1=W, 2=E, 3=N
+// 8-direction sheet layout (PixelLab): 0=S, 1=SE, 2=E, 3=NE, 4=N, 5=NW, 6=W, 7=SW
+const IDLE_FRAME_BY_DIR = [0, 6, 2, 4];
+
 type WASDKeys = {
   up: Phaser.Input.Keyboard.Key;
   down: Phaser.Input.Keyboard.Key;
@@ -70,8 +76,14 @@ export class MainScene extends Phaser.Scene {
       frameWidth: TILE,
       frameHeight: TILE,
     });
-    this.makePlayerTexture("player", 0xd83b3b);
-    this.makePlayerTexture("playerRemote", 0x3b78d8);
+    this.load.spritesheet("player_walk", "/assets/characters/player_walk.png", {
+      frameWidth: PLAYER_FRAME,
+      frameHeight: PLAYER_FRAME,
+    });
+    this.load.spritesheet("player_idle", "/assets/characters/player_idle.png", {
+      frameWidth: PLAYER_FRAME,
+      frameHeight: PLAYER_FRAME,
+    });
   }
 
   async create() {
@@ -80,14 +92,15 @@ export class MainScene extends Phaser.Scene {
     this.buildGroundLayer();
     this.buildDecorations();
     this.trees = this.buildTrees();
+    this.createPlayerAnimations();
 
     const spawnX = WORLD_W / 2;
     const spawnY = WORLD_H / 2;
-    this.player = this.physics.add.sprite(spawnX, spawnY, "player");
-    this.player.setOrigin(0.5, 0.9);
+    this.player = this.physics.add.sprite(spawnX, spawnY, "player_idle", 0);
+    this.player.setOrigin(0.5, 0.85);
     this.player.setCollideWorldBounds(true);
     const pbody = this.player.body as Phaser.Physics.Arcade.Body;
-    pbody.setSize(14, 10).setOffset(5, 18);
+    pbody.setSize(20, 8).setOffset(20, 46);
     this.physics.add.collider(this.player, this.trees);
 
     this.nameTag = this.add
@@ -156,10 +169,37 @@ export class MainScene extends Phaser.Scene {
     else if (vx > 0) this.dir = 2;
 
     this.player.setDepth(this.player.y);
-    this.nameTag.setPosition(this.player.x, this.player.y - this.player.displayHeight + 2);
+    this.nameTag.setPosition(this.player.x, this.player.y - this.player.displayHeight * 0.85 + 2);
+
+    const moving = vx !== 0 || vy !== 0;
+    this.applyPlayerAnimation(this.player, this.dir, moving);
 
     this.syncRemotes();
-    this.maybeSendMove(time, vx !== 0 || vy !== 0);
+    this.maybeSendMove(time, moving);
+  }
+
+  private createPlayerAnimations() {
+    if (this.anims.exists("walk_south")) return;
+    this.anims.create({
+      key: "walk_south",
+      frames: this.anims.generateFrameNumbers("player_walk", { start: 0, end: 5 }),
+      frameRate: 10,
+      repeat: -1,
+    });
+  }
+
+  private applyPlayerAnimation(
+    sprite: Phaser.GameObjects.Sprite,
+    dir: number,
+    moving: boolean
+  ) {
+    if (moving && dir === 0) {
+      sprite.play("walk_south", true);
+      return;
+    }
+    if (sprite.anims.isPlaying) sprite.anims.stop();
+    const idleFrame = IDLE_FRAME_BY_DIR[dir] ?? 0;
+    sprite.setTexture("player_idle", idleFrame);
   }
 
   private maybeSendMove(time: number, moving: boolean) {
@@ -190,8 +230,9 @@ export class MainScene extends Phaser.Scene {
       ent.sprite.x = Phaser.Math.Linear(ent.sprite.x, p.x, lerp);
       ent.sprite.y = Phaser.Math.Linear(ent.sprite.y, p.y, lerp);
       ent.sprite.setDepth(ent.sprite.y);
-      ent.nameTag.setPosition(ent.sprite.x, ent.sprite.y - ent.sprite.displayHeight + 2);
+      ent.nameTag.setPosition(ent.sprite.x, ent.sprite.y - ent.sprite.displayHeight * 0.85 + 2);
       ent.nameTag.setDepth(ent.sprite.y + 1);
+      this.applyPlayerAnimation(ent.sprite, p.dir | 0, !!p.moving);
       if (ent.chatBubble) {
         ent.chatBubble.setPosition(ent.sprite.x, ent.sprite.y - ent.sprite.displayHeight - 8);
         ent.chatBubble.setDepth(ent.sprite.y + 2);
@@ -202,8 +243,8 @@ export class MainScene extends Phaser.Scene {
   private handlePlayerAdd(sid: string, p: RemotePlayer) {
     if (sid === this.net.sessionId) return;
     if (this.remotes.has(sid)) return;
-    const sprite = this.add.sprite(p.x, p.y, "playerRemote");
-    sprite.setOrigin(0.5, 0.9);
+    const sprite = this.add.sprite(p.x, p.y, "player_idle", IDLE_FRAME_BY_DIR[p.dir | 0] ?? 0);
+    sprite.setOrigin(0.5, 0.85);
     sprite.setDepth(p.y);
     const nameTag = this.add
       .text(p.x, p.y - 24, p.name, {
@@ -442,34 +483,6 @@ export class MainScene extends Phaser.Scene {
       tree.setDepth(wy);
     }
     return trees;
-  }
-
-  private makePlayerTexture(key: string, bodyColor: number) {
-    const W = 16;
-    const H = 24;
-    const g = this.add.graphics({ x: 0, y: 0 });
-    g.fillStyle(0xffd7a8, 1);
-    g.fillRect(4, 0, 8, 8);
-    g.fillStyle(0x000000, 1);
-    g.fillRect(6, 3, 1, 1);
-    g.fillRect(9, 3, 1, 1);
-    g.fillStyle(0x4a3a2a, 1);
-    g.fillRect(3, 0, 10, 2);
-    g.fillRect(3, 1, 2, 4);
-    g.fillRect(11, 1, 2, 4);
-    g.fillStyle(bodyColor, 1);
-    g.fillRect(3, 8, 10, 10);
-    g.fillStyle(0xffd7a8, 1);
-    g.fillRect(2, 9, 2, 6);
-    g.fillRect(12, 9, 2, 6);
-    g.fillStyle(0x2a3f6b, 1);
-    g.fillRect(4, 18, 4, 5);
-    g.fillRect(8, 18, 4, 5);
-    g.fillStyle(0x1a1a1a, 1);
-    g.fillRect(4, 22, 4, 2);
-    g.fillRect(8, 22, 4, 2);
-    g.generateTexture(key, W, H);
-    g.destroy();
   }
 
 }
