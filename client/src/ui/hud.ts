@@ -67,7 +67,7 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
 
   const inventoryHint = document.createElement("div");
   inventoryHint.className = "aurora-inventory-hint";
-  inventoryHint.textContent = "[I] 닫기  ·  [1-8] 핫바 선택";
+  inventoryHint.textContent = "[E] 닫기  ·  [1-8] 핫바 선택";
   inventoryEl.appendChild(inventoryHint);
 
   const minimapCanvas = document.createElement("canvas");
@@ -215,7 +215,7 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
   function onKey(e: KeyboardEvent) {
     const active = document.activeElement;
     if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
-    if (e.code === "KeyI") {
+    if (e.code === "KeyE") {
       toggleInventory();
       e.preventDefault();
       return;

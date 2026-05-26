@@ -512,7 +512,7 @@ export class MainScene extends Phaser.Scene {
       .setDepth(100001);
 
     this.add
-      .text(8, 540 - 8, "[방향키] 이동  ·  [Shift] 달리기  ·  [Space] 채취  ·  [I] 인벤토리  ·  [Enter] 채팅", {
+      .text(8, 540 - 8, "[방향키] 이동  ·  [Shift] 달리기  ·  [Space] 채취  ·  [E] 인벤토리  ·  [Enter] 채팅", {
         fontFamily: "monospace",
         fontSize: "9px",
         color: "#aaaaaa",
