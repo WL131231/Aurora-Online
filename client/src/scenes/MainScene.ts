@@ -145,7 +145,7 @@ export class MainScene extends Phaser.Scene {
 
     const nameTagKey = this.bakeLabel(this.playerName, {
       color: "#ffffff",
-      fontSize: 11,
+      fontSize: 8,
     });
     this.nameTag = this.add
       .image(spawnX, spawnY - 5, nameTagKey)
@@ -308,7 +308,7 @@ export class MainScene extends Phaser.Scene {
     sprite.setDepth(p.y);
     const nameTagKey = this.bakeLabel(p.name, {
       color: "#cfe8ff",
-      fontSize: 11,
+      fontSize: 8,
     });
     const nameTag = this.add
       .image(p.x, p.y - 5, nameTagKey)
@@ -527,14 +527,14 @@ export class MainScene extends Phaser.Scene {
     });
 
     // Threshold both alpha AND color to remove ClearType subpixel anti-aliasing
-    // that canvas font rendering bakes into the texture. Threshold is kept
-    // low (alpha 16) so we don't wipe out the thin text strokes — alpha 96
-    // was too aggressive and erased the visible glyph body for thin fonts.
+    // that canvas font rendering bakes into the texture. Higher threshold
+    // (80) keeps only the core of each glyph stroke — the AA edges that
+    // were puffing the text up to look bold get cut off.
     const imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
       const alpha = data[i + 3];
-      if (alpha < 16) {
+      if (alpha < 80) {
         data[i] = 0;
         data[i + 1] = 0;
         data[i + 2] = 0;
