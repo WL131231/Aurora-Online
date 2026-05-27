@@ -793,18 +793,34 @@ export class MainScene extends Phaser.Scene {
   private buildDecorations() {
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-decor"]);
     const center = { x: MAP_W / 2, y: MAP_H / 2 };
-    for (let i = 0; i < 50; i++) {
-      const tx = rng.between(1, MAP_W - 2);
-      const ty = rng.between(1, MAP_H - 2);
-      if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
-      if (this.isInVillage(tx, ty)) continue;
-      const idx = DECORATION_FRAMES[rng.between(0, DECORATION_FRAMES.length - 1)];
-      const wx = tx * TILE + TILE / 2;
-      const wy = ty * TILE + TILE / 2;
-      const sprite = this.add.sprite(wx, wy, "props", idx);
-      sprite.setOrigin(0.5, 0.9);
-      sprite.setDepth(wy - 1);
-    }
+    // Logging-friendly deco (bushes, flowers, mushrooms, stumps).
+    const LOGGING_DECO = [9, 10, 13, 14, 15];
+    // Mine-friendly deco (small rocks, stumps).
+    const MINE_DECO = [12, 14];
+    // Total deco budget per zone — denser than before so the world reads
+    // distinctly as forest vs mine vs village.
+    const LOGGING_COUNT = 110;
+    const MINE_COUNT = 70;
+
+    const tryPlace = (zoneCheck: (tx: number, ty: number) => boolean, frames: number[], n: number) => {
+      let placed = 0;
+      let attempts = 0;
+      while (placed < n && attempts < n * 4) {
+        attempts++;
+        const tx = rng.between(1, MAP_W - 2);
+        const ty = rng.between(1, MAP_H - 2);
+        if (!zoneCheck(tx, ty)) continue;
+        if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
+        const idx = frames[rng.between(0, frames.length - 1)];
+        const sprite = this.add.sprite(tx * TILE + TILE / 2, ty * TILE + TILE / 2, "props", idx);
+        sprite.setOrigin(0.5, 0.9);
+        sprite.setDepth(ty * TILE - 1);
+        placed++;
+      }
+    };
+
+    tryPlace((tx) => tx <= ZONE_FARM_X_MAX, LOGGING_DECO, LOGGING_COUNT);
+    tryPlace((tx) => tx > ZONE_VILLAGE_X_MAX, MINE_DECO, MINE_COUNT);
   }
 
   private isInVillage(tx: number, _ty: number): boolean {
