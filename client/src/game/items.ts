@@ -16,6 +16,8 @@ export const ITEMS: Record<string, ItemDef> = {
   copper_ore: { id: "copper_ore", name: "동광석", emoji: "🟠", kind: "resource", iconUrl: "/assets/items/copper_ore.png" },
   silver_ore: { id: "silver_ore", name: "은광석", emoji: "⚪", kind: "resource", iconUrl: "/assets/items/silver_ore.png" },
   gold_ore: { id: "gold_ore", name: "금광석", emoji: "🟡", kind: "resource", iconUrl: "/assets/items/gold_ore.png" },
+  turnip_seed: { id: "turnip_seed", name: "순무 씨앗", emoji: "🌱", kind: "resource" },
+  turnip: { id: "turnip", name: "순무", emoji: "🥕", kind: "resource" },
 };
 
 export type ResourceType = "tree" | "rock" | "copper_node" | "silver_node" | "gold_node";

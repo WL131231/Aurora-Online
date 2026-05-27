@@ -8,8 +8,10 @@ const inventory = new Inventory();
 const hotbar = new Hotbar();
 inventory.add("axe", 1);
 inventory.add("pickaxe", 1);
+inventory.add("turnip_seed", 5);
 hotbar.setSlot(0, "axe");
 hotbar.setSlot(1, "pickaxe");
+hotbar.setSlot(2, "turnip_seed");
 
 // V1 character customization — sprite-tint based, persisted in localStorage.
 // V2 will swap to layered hair/hat/shirt sprites (Z9별-style module parts).
