@@ -138,6 +138,7 @@ export class MainScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private harvestKey!: Phaser.Input.Keyboard.Key;
   private runKey!: Phaser.Input.Keyboard.Key;
+  private skillKeys: Phaser.Input.Keyboard.Key[] = [];
   private nameTag!: Phaser.GameObjects.Image;
   private harvestables!: Phaser.GameObjects.Group;
   // id → sprite map for server-synced harvestables (online mode only).
@@ -297,6 +298,20 @@ export class MainScene extends Phaser.Scene {
     this.harvestKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.harvestKey.on("down", () => this.tryHarvest());
     this.runKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+
+    // Skill slots (Z9별-style S/D/F/G). V1 just toasts a placeholder; V2 will
+    // bind real skills (dash / heal / fishing rod / glide etc.).
+    const skillBindings: Array<[number, string]> = [
+      [Phaser.Input.Keyboard.KeyCodes.S, "S"],
+      [Phaser.Input.Keyboard.KeyCodes.D, "D"],
+      [Phaser.Input.Keyboard.KeyCodes.F, "F"],
+      [Phaser.Input.Keyboard.KeyCodes.G, "G"],
+    ];
+    for (const [code, label] of skillBindings) {
+      const key = this.input.keyboard!.addKey(code);
+      key.on("down", () => this.castSkill(label));
+      this.skillKeys.push(key);
+    }
 
     this.setupHud();
     this.setupChatInput();
@@ -1166,6 +1181,30 @@ export class MainScene extends Phaser.Scene {
     this.lastZone = zone;
     this.cameras.main.flash(260, 0, 0, 0);
     this.showZoneBanner(ZONE_LABEL[zone]);
+  }
+
+  private castSkill(slot: string) {
+    const toast = this.add
+      .text(480, 380, `스킬 [${slot}] — 곧 추가됩니다`, {
+        fontFamily: "Galmuri11, monospace",
+        fontSize: "13px",
+        color: "#fff8d0",
+        backgroundColor: "rgba(0,0,0,0.65)",
+        padding: { x: 12, y: 6 },
+        resolution: 2,
+      })
+      .setOrigin(0.5, 0.5)
+      .setScrollFactor(0)
+      .setDepth(100002)
+      .setAlpha(0);
+    this.tweens.add({
+      targets: toast,
+      alpha: 1,
+      duration: 120,
+      yoyo: true,
+      hold: 650,
+      onComplete: () => toast.destroy(),
+    });
   }
 
   private showZoneBanner(name: string) {
