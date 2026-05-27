@@ -547,8 +547,11 @@ export class MainScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(100001);
 
+    // Bottom of canvas is occupied by the HTML hotbar (~100px tall when
+     // scaled). Push these texts above that band so they never clip into the
+     // hotbar background.
     this.chatLogText = this.add
-      .text(8, 540 - 8 - 80, "", {
+      .text(8, 540 - 110 - 4, "", {
         fontFamily: "monospace",
         fontSize: "10px",
         color: "#ffffff",
@@ -562,7 +565,7 @@ export class MainScene extends Phaser.Scene {
       .setDepth(100001);
 
     this.add
-      .text(8, 540 - 8, "[방향키] 이동  ·  [Shift] 달리기  ·  [Space] 채취  ·  [E] 인벤토리  ·  [Enter] 채팅", {
+      .text(8, 540 - 110, "[방향키] 이동  ·  [Shift] 달리기  ·  [Space] 채취  ·  [E] 인벤토리  ·  [Enter] 채팅", {
         fontFamily: "monospace",
         fontSize: "9px",
         color: "#aaaaaa",
