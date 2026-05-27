@@ -1252,9 +1252,16 @@ export class MainScene extends Phaser.Scene {
   }
 
   private enterBuilding(b: BuildingSpec) {
-    // Interior zones (full rooms) ship in the next chapter. For now a placeholder
-    // greeting fires so the building feels alive and the resident NPC speaks up.
-    this.appendChat(`[${b.npcName}의 건물 입구] 내부는 다음 업데이트에 열립니다.`);
+    // Interior teleport (real rooms with the NPC moved inside) is the next
+    // chapter. V1 fires a centered banner so the building feels "entered"
+    // and the resident NPC greets you over the chat log.
+    const shortName = b.npcName.replace(/^(이장|잡화점|대장장이) /, "");
+    const buildingLabel =
+      b.key === "bldg_town_hall" ? "마을회관"
+        : b.key === "bldg_store" ? "잡화점"
+        : b.key === "bldg_blacksmith" ? "대장간"
+        : "건물";
+    this.showZoneBanner(`${buildingLabel} 입장 — ${shortName}`);
     const line = NPC_LINES[b.npcName];
     if (line) this.appendChat(`${b.npcName}: ${line}`);
   }
