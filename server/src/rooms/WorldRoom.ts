@@ -1,5 +1,5 @@
 import { Client, Room } from "colyseus";
-import { Harvestable, Player, WorldState } from "../schemas/WorldState.js";
+import { FarmPatch, Harvestable, Player, WorldState } from "../schemas/WorldState.js";
 
 const TILE = 32;
 // World is one continuous 150-tile-wide strip split into 3 zones:
@@ -47,6 +47,12 @@ const DROP_FOR_RESOURCE: Record<string, string> = {
 // Distance check for harvest — slight buffer over client HARVEST_RANGE=56
 // so honest clients don't get rejected by float drift.
 const HARVEST_RANGE_SQ = 80 * 80;
+const FARM_REACH_SQ = 80 * 80;
+const FARM_GROW_MS = 30_000;
+const FARM_BASE_TX = 82;
+const FARM_BASE_TY = 36;
+const FARM_COLS = 6;
+const FARM_ROWS = 5;
 
 // Tinytown frame indices used for trees (alive variants).
 const TREE_FRAMES = [0, 1, 2, 3, 4, 5, 6, 7];
@@ -56,6 +62,7 @@ type MoveMessage = { x: number; y: number; dir?: number; moving?: number };
 type ChatMessage = { text: string };
 type HarvestMessage = { id: string; toolId: string };
 type HotbarSelectMessage = { index: number };
+type FarmActionMessage = { id: string };
 
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
 const MAX_NAME = 16;
@@ -67,6 +74,7 @@ export class WorldRoom extends Room<WorldState> {
 
   onCreate() {
     this.seedHarvestables();
+    this.seedFarmPatches();
 
     this.onMessage("move", (client, msg: MoveMessage) => {
       const p = this.state.players.get(client.sessionId);
@@ -106,6 +114,67 @@ export class WorldRoom extends Room<WorldState> {
       if (idx < 0 || idx >= p.hotbar.length) return;
       p.selectedHotbar = idx;
     });
+
+    this.onMessage("farm_plant", (client, msg: FarmActionMessage) => {
+      this.handleFarmPlant(client, msg);
+    });
+    this.onMessage("farm_harvest", (client, msg: FarmActionMessage) => {
+      this.handleFarmHarvest(client, msg);
+    });
+  }
+
+  private seedFarmPatches() {
+    let counter = 0;
+    for (let dy = 0; dy < FARM_ROWS; dy++) {
+      for (let dx = 0; dx < FARM_COLS; dx++) {
+        const f = new FarmPatch();
+        f.x = (FARM_BASE_TX + dx) * TILE + TILE / 2;
+        f.y = (FARM_BASE_TY + dy) * TILE + TILE / 2;
+        f.state = "empty";
+        f.plantedAt = 0;
+        f.plantedBy = "";
+        this.state.farmPatches.set(`f${counter++}`, f);
+      }
+    }
+    console.log(`[seed] ${this.state.farmPatches.size} farm patches`);
+  }
+
+  private handleFarmPlant(client: Client, msg: FarmActionMessage) {
+    if (!msg || typeof msg.id !== "string") return;
+    const patch = this.state.farmPatches.get(msg.id);
+    if (!patch || patch.state !== "empty") return;
+    const p = this.state.players.get(client.sessionId);
+    if (!p) return;
+    const dx = patch.x - p.x;
+    const dy = patch.y - p.y;
+    if (dx * dx + dy * dy > FARM_REACH_SQ) return;
+    const seeds = p.inventory.get("turnip_seed") ?? 0;
+    if (seeds <= 0) return;
+    p.inventory.set("turnip_seed", seeds - 1);
+    patch.state = "planted";
+    patch.plantedAt = Date.now();
+    patch.plantedBy = client.sessionId;
+    this.clock.setTimeout(() => {
+      const cur = this.state.farmPatches.get(msg.id);
+      if (!cur || cur.state !== "planted") return;
+      cur.state = "grown";
+    }, FARM_GROW_MS);
+  }
+
+  private handleFarmHarvest(client: Client, msg: FarmActionMessage) {
+    if (!msg || typeof msg.id !== "string") return;
+    const patch = this.state.farmPatches.get(msg.id);
+    if (!patch || patch.state !== "grown") return;
+    const p = this.state.players.get(client.sessionId);
+    if (!p) return;
+    const dx = patch.x - p.x;
+    const dy = patch.y - p.y;
+    if (dx * dx + dy * dy > FARM_REACH_SQ) return;
+    const cur = p.inventory.get("turnip") ?? 0;
+    p.inventory.set("turnip", cur + 1);
+    patch.state = "empty";
+    patch.plantedAt = 0;
+    patch.plantedBy = "";
   }
 
   private seedHarvestables() {
@@ -212,7 +281,8 @@ export class WorldRoom extends Room<WorldState> {
     // Starter inventory + hotbar (20 slots not enforced server-side yet — just defaults).
     p.inventory.set("axe", 1);
     p.inventory.set("pickaxe", 1);
-    p.hotbar.push("axe", "pickaxe", "", "", "", "", "", "");
+    p.inventory.set("turnip_seed", 5);
+    p.hotbar.push("axe", "pickaxe", "turnip_seed", "", "", "", "", "");
     p.selectedHotbar = 0;
 
     this.state.players.set(client.sessionId, p);

@@ -146,13 +146,18 @@ export class MainScene extends Phaser.Scene {
   // Server-synced harvestable HP cache so we can detect deltas on change.
   private serverHpCache = new Map<string, number>();
   private npcs: Array<{ sprite: Phaser.GameObjects.Sprite; name: string; line: string }> = [];
-  // Farm patches sit just south of the plaza inside the village zone.
-  private farmPatches: Array<{
+  // Farm patches — server-authoritative when online, client-local fallback offline.
+  // Keyed by id ("f0".."f29" from server; "local-N" for offline fallback).
+  private farmPatches = new Map<string, {
+    id: string;
+    x: number;
+    y: number;
     tx: number;
     ty: number;
     state: "empty" | "planted" | "grown";
     plantedAt: number;
-  }> = [];
+  }>();
+  private farmLocalGrowthTimers = new Map<string, number>();
   private farmGraphics?: Phaser.GameObjects.Graphics;
 
   private net!: NetworkManager;
@@ -275,7 +280,7 @@ export class MainScene extends Phaser.Scene {
     this.buildDecorations();
     this.harvestables = this.add.group();
     this.buildVillage();
-    this.buildFarm();
+    this.ensureFarmGraphics();
     this.createPlayerAnimations();
 
     const spawnX = WORLD_W / 2;
@@ -335,6 +340,9 @@ export class MainScene extends Phaser.Scene {
     this.net.onHarvestableChange((id, h) => this.changeServerHarvestable(id, h));
     this.net.onHarvestableRemove((id) => this.removeServerHarvestable(id));
     this.net.onHarvestDrop((evt) => this.handleHarvestDrop(evt));
+    this.net.onFarmPatchAdd((id, fp) => this.addServerFarmPatch(id, fp));
+    this.net.onFarmPatchChange((id, fp) => this.changeServerFarmPatch(id, fp));
+    this.net.onFarmPatchRemove((id) => this.removeServerFarmPatch(id));
     const inventory = this.registry.get("inventory") as Inventory | undefined;
     if (inventory) {
       this.net.onInventoryChange((itemId, count) => {
@@ -347,8 +355,10 @@ export class MainScene extends Phaser.Scene {
     if (ok) {
       this.setStatus(`온라인 — ${this.playerName}`);
     } else {
-      // Offline: seed locally so the world isn't empty.
+      // Offline: seed harvestables + farm patches locally so the world isn't empty.
       this.seedOfflineHarvestables();
+      this.buildFarmOffline();
+      this.redrawFarm();
       this.setStatus(`오프라인 모드 — ${this.playerName} (서버 없음)`);
     }
 
@@ -1207,55 +1217,70 @@ export class MainScene extends Phaser.Scene {
     this.showZoneBanner(ZONE_LABEL[zone]);
   }
 
-  private buildFarm() {
-    // 6 columns × 5 rows of soil patches south-east of the plaza.
+  // Offline fallback only — server seeds the same 6x5 grid when online.
+  private buildFarmOffline() {
     const baseTx = 82;
     const baseTy = 36;
+    let counter = 0;
     for (let dy = 0; dy < 5; dy++) {
       for (let dx = 0; dx < 6; dx++) {
-        this.farmPatches.push({
-          tx: baseTx + dx,
-          ty: baseTy + dy,
+        const tx = baseTx + dx;
+        const ty = baseTy + dy;
+        const id = `local-${counter++}`;
+        this.farmPatches.set(id, {
+          id,
+          x: tx * TILE + TILE / 2,
+          y: ty * TILE + TILE / 2,
+          tx,
+          ty,
           state: "empty",
           plantedAt: 0,
         });
       }
     }
+  }
+
+  private ensureFarmGraphics() {
+    if (this.farmGraphics) return;
     this.farmGraphics = this.add.graphics();
     this.farmGraphics.setDepth(-700);
-    this.redrawFarm();
   }
 
   private redrawFarm() {
+    this.ensureFarmGraphics();
     if (!this.farmGraphics) return;
     this.farmGraphics.clear();
-    for (const p of this.farmPatches) {
-      const wx = p.tx * TILE;
-      const wy = p.ty * TILE;
+    for (const p of this.farmPatches.values()) {
+      const wx = p.x - TILE / 2;
+      const wy = p.y - TILE / 2;
       this.farmGraphics.fillStyle(0x6b4a2a, 1);
       this.farmGraphics.fillRect(wx + 1, wy + 1, TILE - 2, TILE - 2);
       this.farmGraphics.lineStyle(1, 0x3a2008, 0.7);
       this.farmGraphics.strokeRect(wx + 1, wy + 1, TILE - 2, TILE - 2);
       if (p.state === "planted") {
-        // Tiny sprout — small green circle in the middle.
         this.farmGraphics.fillStyle(0x6cb04a, 1);
-        this.farmGraphics.fillCircle(wx + TILE / 2, wy + TILE / 2, 4);
+        this.farmGraphics.fillCircle(p.x, p.y, 4);
       } else if (p.state === "grown") {
-        // Bushy leaves + orange root peeking.
         this.farmGraphics.fillStyle(0x4a9038, 1);
-        this.farmGraphics.fillCircle(wx + TILE / 2, wy + TILE / 2, 9);
+        this.farmGraphics.fillCircle(p.x, p.y, 9);
         this.farmGraphics.fillStyle(0xff8a32, 1);
-        this.farmGraphics.fillCircle(wx + TILE / 2, wy + TILE / 2 + 2, 4);
+        this.farmGraphics.fillCircle(p.x, p.y + 2, 4);
       }
     }
   }
 
+  // Offline-only growth ticker. When online the server promotes patches and
+  // we just receive the change through onFarmPatchChange.
   private updateFarm() {
+    if (this.net?.connected) return;
     let changed = false;
     const now = this.time.now;
-    for (const p of this.farmPatches) {
-      if (p.state === "planted" && now - p.plantedAt > 30_000) {
+    for (const p of this.farmPatches.values()) {
+      if (p.state !== "planted") continue;
+      const t = this.farmLocalGrowthTimers.get(p.id);
+      if (t !== undefined && now - t > 30_000) {
         p.state = "grown";
+        this.farmLocalGrowthTimers.delete(p.id);
         changed = true;
       }
     }
@@ -1268,29 +1293,72 @@ export class MainScene extends Phaser.Scene {
     if (!inventory) return false;
     const px = this.player.x;
     const py = this.player.y;
-    for (const p of this.farmPatches) {
-      const wx = p.tx * TILE + TILE / 2;
-      const wy = p.ty * TILE + TILE / 2;
-      const dx = wx - px;
-      const dy = wy - py;
-      if (dx * dx + dy * dy >= 44 * 44) continue;
-      if (p.state === "empty" && inventory.count("turnip_seed") > 0) {
-        // Plant. V1 mutates client inventory directly — server sync ships in V2.
-        inventory.setFromServer("turnip_seed", inventory.count("turnip_seed") - 1);
-        p.state = "planted";
-        p.plantedAt = this.time.now;
-        this.redrawFarm();
-        return true;
-      }
-      if (p.state === "grown") {
-        inventory.setFromServer("turnip", inventory.count("turnip") + 1);
-        p.state = "empty";
-        p.plantedAt = 0;
-        this.redrawFarm();
-        return true;
+    // Closest patch within reach.
+    let nearest: typeof this.farmPatches extends Map<string, infer V> ? V | null : null = null;
+    let nearestDist = 44 * 44;
+    for (const p of this.farmPatches.values()) {
+      const dx = p.x - px;
+      const dy = p.y - py;
+      const d = dx * dx + dy * dy;
+      if (d < nearestDist) {
+        nearest = p;
+        nearestDist = d;
       }
     }
+    if (!nearest) return false;
+
+    if (nearest.state === "empty" && inventory.count("turnip_seed") > 0) {
+      if (this.net?.connected) {
+        this.net.sendFarmPlant(nearest.id);
+      } else {
+        inventory.setFromServer("turnip_seed", inventory.count("turnip_seed") - 1);
+        nearest.state = "planted";
+        nearest.plantedAt = this.time.now;
+        this.farmLocalGrowthTimers.set(nearest.id, this.time.now);
+        this.redrawFarm();
+      }
+      return true;
+    }
+    if (nearest.state === "grown") {
+      if (this.net?.connected) {
+        this.net.sendFarmHarvest(nearest.id);
+      } else {
+        inventory.setFromServer("turnip", inventory.count("turnip") + 1);
+        nearest.state = "empty";
+        nearest.plantedAt = 0;
+        this.farmLocalGrowthTimers.delete(nearest.id);
+        this.redrawFarm();
+      }
+      return true;
+    }
     return false;
+  }
+
+  // Server farm patch sync.
+  private addServerFarmPatch(id: string, fp: { x: number; y: number; state: string; plantedAt: number }) {
+    this.farmPatches.set(id, {
+      id,
+      x: fp.x,
+      y: fp.y,
+      tx: Math.floor(fp.x / TILE),
+      ty: Math.floor(fp.y / TILE),
+      state: (fp.state as "empty" | "planted" | "grown"),
+      plantedAt: fp.plantedAt,
+    });
+    this.redrawFarm();
+  }
+
+  private changeServerFarmPatch(id: string, fp: { state: string; plantedAt: number }) {
+    const cur = this.farmPatches.get(id);
+    if (!cur) return;
+    cur.state = fp.state as "empty" | "planted" | "grown";
+    cur.plantedAt = fp.plantedAt;
+    this.redrawFarm();
+  }
+
+  private removeServerFarmPatch(id: string) {
+    this.farmPatches.delete(id);
+    this.redrawFarm();
   }
 
   private castSkill(slot: string) {

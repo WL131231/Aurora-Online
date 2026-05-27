@@ -19,6 +19,14 @@ export interface RemoteHarvestable {
   scale: number;
 }
 
+export interface RemoteFarmPatch {
+  x: number;
+  y: number;
+  state: string; // empty | planted | grown
+  plantedAt: number;
+  plantedBy: string;
+}
+
 export interface ChatMessage {
   sessionId: string;
   name: string;
@@ -43,6 +51,9 @@ export type HarvestableChangeHandler = (id: string, h: RemoteHarvestable) => voi
 export type HarvestableRemoveHandler = (id: string) => void;
 export type HarvestDropHandler = (event: HarvestDropEvent) => void;
 export type InventoryHandler = (itemId: string, count: number) => void;
+export type FarmPatchAddHandler = (id: string, patch: RemoteFarmPatch) => void;
+export type FarmPatchChangeHandler = (id: string, patch: RemoteFarmPatch) => void;
+export type FarmPatchRemoveHandler = (id: string) => void;
 
 export class NetworkManager {
   private client: Client;
@@ -58,6 +69,9 @@ export class NetworkManager {
   private hRemoveHandlers: HarvestableRemoveHandler[] = [];
   private hDropHandlers: HarvestDropHandler[] = [];
   private invHandlers: InventoryHandler[] = [];
+  private fpAddHandlers: FarmPatchAddHandler[] = [];
+  private fpChangeHandlers: FarmPatchChangeHandler[] = [];
+  private fpRemoveHandlers: FarmPatchRemoveHandler[] = [];
   private $?: ReturnType<typeof getStateCallbacks>;
 
   constructor(endpoint: string) {
@@ -81,6 +95,10 @@ export class NetworkManager {
         harvestables: {
           onAdd: (cb: (h: RemoteHarvestable, k: string) => void) => void;
           onRemove: (cb: (h: RemoteHarvestable, k: string) => void) => void;
+        };
+        farmPatches: {
+          onAdd: (cb: (f: RemoteFarmPatch, k: string) => void) => void;
+          onRemove: (cb: (f: RemoteFarmPatch, k: string) => void) => void;
         };
       };
 
@@ -107,6 +125,19 @@ export class NetworkManager {
       });
       state.harvestables.onRemove((_h, id) => {
         for (const cb of this.hRemoveHandlers) cb(id);
+      });
+
+      state.farmPatches.onAdd((f, id) => {
+        for (const cb of this.fpAddHandlers) cb(id, f);
+        const node = $(f as unknown as object) as unknown as {
+          onChange: (cb: () => void) => void;
+        };
+        node.onChange(() => {
+          for (const cb of this.fpChangeHandlers) cb(id, f);
+        });
+      });
+      state.farmPatches.onRemove((_f, id) => {
+        for (const cb of this.fpRemoveHandlers) cb(id);
       });
 
       room.onMessage<ChatMessage>("chat", (msg) => {
@@ -153,6 +184,16 @@ export class NetworkManager {
     this.room.send("harvest", { id, toolId });
   }
 
+  sendFarmPlant(id: string) {
+    if (!this.connected || !this.room) return;
+    this.room.send("farm_plant", { id });
+  }
+
+  sendFarmHarvest(id: string) {
+    if (!this.connected || !this.room) return;
+    this.room.send("farm_harvest", { id });
+  }
+
   private subscribeOwnInventory(player: RemotePlayer) {
     if (!this.$) return;
     const inv = (player as unknown as { inventory: object }).inventory;
@@ -196,5 +237,14 @@ export class NetworkManager {
   }
   onInventoryChange(cb: InventoryHandler) {
     this.invHandlers.push(cb);
+  }
+  onFarmPatchAdd(cb: FarmPatchAddHandler) {
+    this.fpAddHandlers.push(cb);
+  }
+  onFarmPatchChange(cb: FarmPatchChangeHandler) {
+    this.fpChangeHandlers.push(cb);
+  }
+  onFarmPatchRemove(cb: FarmPatchRemoveHandler) {
+    this.fpRemoveHandlers.push(cb);
   }
 }
