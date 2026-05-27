@@ -95,15 +95,29 @@ interface BuildingSpec {
   key: string;          // texture key
   tx: number;           // tile x (top-left anchor relative to origin)
   ty: number;           // tile y
-  npcKey?: string;      // optional NPC sprite placed just below the door
+  npcKey?: string;      // NPC sprite — placed inside the interior room
   npcName: string;      // display name above NPC
+  // Interior box origin in world coords (off-map, south of the village strip).
+  // Each interior gets its own 480x320 room.
+  interiorX: number;
+  interiorY: number;
 }
+
+const INTERIOR_W = 480;
+const INTERIOR_H = 320;
+// Interiors live south of the playable world. Camera + physics bounds are
+// extended to include this band so player.setPosition there works smoothly.
+const INTERIOR_BASE_Y_OFFSET = 200;
+// Interior rooms live south of the playable world (Y > WORLD_H). Camera + physics
+// bounds are extended to cover this off-map band so teleport works smoothly.
+const INTERIOR_Y_BASE = MAP_H * TILE + INTERIOR_BASE_Y_OFFSET; // 1800
 const BUILDINGS: BuildingSpec[] = [
-  // tx values sit inside the village zone (X 50..99). Town hall flanks the
-  // road centerline (tile 75); store + blacksmith flank the plaza further south.
-  { key: "bldg_town_hall", tx: 75, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨" },
-  { key: "bldg_store",     tx: 70, ty: 32, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨"  },
-  { key: "bldg_blacksmith",tx: 79, ty: 32, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨" },
+  { key: "bldg_town_hall", tx: 75, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨",
+    interiorX:  600, interiorY: INTERIOR_Y_BASE },
+  { key: "bldg_store",     tx: 70, ty: 32, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨",
+    interiorX: 1500, interiorY: INTERIOR_Y_BASE },
+  { key: "bldg_blacksmith",tx: 79, ty: 32, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨",
+    interiorX: 2500, interiorY: INTERIOR_Y_BASE },
 ];
 
 const NPC_LINES: Record<string, string> = {
@@ -146,6 +160,10 @@ export class MainScene extends Phaser.Scene {
   // Server-synced harvestable HP cache so we can detect deltas on change.
   private serverHpCache = new Map<string, number>();
   private npcs: Array<{ sprite: Phaser.GameObjects.Sprite; name: string; line: string }> = [];
+  // Building-entry destinations (outside building sprite → interior coords).
+  private buildingEntryDest = new Map<string, { x: number; y: number }>();
+  // Interior exit points (inside interior → outside building front).
+  private exitPoints: Array<{ x: number; y: number; returnX: number; returnY: number }> = [];
   // Farm patches — server-authoritative when online, client-local fallback offline.
   // Keyed by id ("f0".."f29" from server; "local-N" for offline fallback).
   private farmPatches = new Map<string, {
@@ -304,8 +322,12 @@ export class MainScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setDepth(100000);
 
-    this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
-    this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
+    // Extended bounds cover the off-map interior strip south of WORLD_H so
+    // teleport into building interiors is smooth and the player isn't snapped
+    // back by collideWorldBounds.
+    const extendedH = INTERIOR_Y_BASE + INTERIOR_H + 200;
+    this.cameras.main.setBounds(0, 0, WORLD_W, extendedH);
+    this.physics.world.setBounds(0, 0, WORLD_W, extendedH);
     this.cameras.main.startFollow(this.player, true, 1, 1);
     this.cameras.main.setZoom(2);
     this.cameras.main.setRoundPixels(true);
@@ -1158,44 +1180,96 @@ export class MainScene extends Phaser.Scene {
       }
     }
 
-    // 6. Buildings (3 sided around the plaza).
+    // 6. Buildings (3 around the road). NPCs live in interiors now, not outside.
     for (const b of BUILDINGS) {
       const wx = b.tx * TILE + TILE / 2;
       const wy = b.ty * TILE + TILE / 2;
       if (this.textures.exists(b.key)) {
         const bldg = this.add.sprite(wx, wy, b.key);
         bldg.setOrigin(0.5, 0.9);
-        // Buildings are 256px source (no upscaling stretch) — scale to ~0.75
-        // so two of them flank the road comfortably inside the 16-tile-wide
-        // village zone.
         bldg.setScale(0.75);
         bldg.setDepth(wy);
       }
+    }
+
+    this.buildInteriors();
+  }
+
+  // Build a 480x320 wood-floor room per building south of the world.
+  // Each interior gets its own NPC + exit portal.
+  private buildInteriors() {
+    for (const b of BUILDINGS) {
+      const cx = b.interiorX + INTERIOR_W / 2;
+      const cy = b.interiorY + INTERIOR_H / 2;
+
+      // Floor + walls
+      const gfx = this.add.graphics();
+      gfx.fillStyle(0x6b452a, 1);
+      gfx.fillRect(b.interiorX, b.interiorY, INTERIOR_W, INTERIOR_H);
+      // Plank grid (faint horizontals every 32px).
+      gfx.lineStyle(1, 0x4a2a10, 0.45);
+      for (let yy = 32; yy < INTERIOR_H; yy += 32) {
+        gfx.lineBetween(b.interiorX, b.interiorY + yy, b.interiorX + INTERIOR_W, b.interiorY + yy);
+      }
+      // Border wall.
+      gfx.lineStyle(4, 0x2a1808, 1);
+      gfx.strokeRect(b.interiorX, b.interiorY, INTERIOR_W, INTERIOR_H);
+      gfx.setDepth(-700);
+
+      // NPC inside, near center-back.
       if (b.npcKey && this.textures.exists(b.npcKey)) {
-        const nx = wx;
-        // Stand below the (now larger) building so NPCs are clearly outside
-        // the doorway rather than clipping into the wall.
-        const ny = wy + TILE * 5;
-        const npc = this.add.sprite(nx, ny, b.npcKey);
+        const npcX = cx;
+        const npcY = cy - 30;
+        const npc = this.add.sprite(npcX, npcY, b.npcKey);
         npc.setOrigin(0.5, 0.85);
-        // NPC source canvas is 68px, player frame is 60px — scale so the
-        // silhouette matches the player on screen.
         npc.setScale(60 / 68);
-        npc.setDepth(ny);
+        npc.setDepth(npcY);
         const labelKey = this.bakeLabel(b.npcName, {
           color: "#ffefb0",
           fontSize: 9,
         });
-        // Name plate now sits below the feet so the face is unobstructed.
-        const label = this.add.image(nx, ny + 6, labelKey);
+        const label = this.add.image(npcX, npcY + 6, labelKey);
         label.setOrigin(0.5, 0);
-        label.setDepth(ny + 1);
+        label.setDepth(npcY + 1);
         this.npcs.push({
           sprite: npc,
           name: b.npcName,
           line: NPC_LINES[b.npcName] ?? "...",
         });
       }
+
+      // Exit portal at the south edge of the room.
+      const exitX = cx;
+      const exitY = b.interiorY + INTERIOR_H - 20;
+      const exit = this.add.graphics();
+      exit.fillStyle(0x4a4a4a, 1);
+      exit.fillRoundedRect(exitX - 22, exitY - 48, 44, 56, 4);
+      exit.lineStyle(2, 0x222222, 1);
+      exit.strokeRoundedRect(exitX - 22, exitY - 48, 44, 56, 4);
+      exit.fillStyle(0x14110b, 0.92);
+      exit.fillRoundedRect(exitX - 14, exitY - 42, 28, 44, 14);
+      exit.setDepth(exitY);
+      const exitLabelKey = this.bakeLabel("출구\n[↑]", {
+        color: "#fff8d0",
+        fontSize: 9,
+        background: "#3a230f",
+        padX: 4,
+        padY: 2,
+      });
+      const exitLabel = this.add.image(exitX, exitY - 56, exitLabelKey);
+      exitLabel.setOrigin(0.5, 1);
+      exitLabel.setDepth(exitY + 1);
+
+      const returnX = b.tx * TILE + TILE / 2;
+      const returnY = (b.ty + 5) * TILE; // outside, just south of the door
+      this.exitPoints.push({ x: exitX, y: exitY - 8, returnX, returnY });
+
+      // Player enters near the south wall of the interior so the camera shows
+      // the NPC ahead of them.
+      this.buildingEntryDest.set(b.key, {
+        x: cx,
+        y: b.interiorY + INTERIOR_H - 60,
+      });
     }
   }
 
@@ -1208,8 +1282,10 @@ export class MainScene extends Phaser.Scene {
 
   // Camera flashes + a big center banner when the player crosses a zone
   // border. No teleport — the world is contiguous; the banner just sells the
-  // "new map" feel partner asked for.
+  // "new map" feel partner asked for. Interiors live south of WORLD_H — skip
+  // the zone banner there since interior entry has its own banner.
   private checkZoneTransition() {
+    if (this.player.y > WORLD_H) return;
     const zone = this.currentZone();
     if (zone === this.lastZone) return;
     this.lastZone = zone;
@@ -1450,6 +1526,19 @@ export class MainScene extends Phaser.Scene {
   private tryBuildingEnter() {
     if (!this.cursors.up) return;
     if (!Phaser.Input.Keyboard.JustDown(this.cursors.up)) return;
+
+    // First: are we standing next to an interior exit portal? Walk back out.
+    for (const e of this.exitPoints) {
+      const dx = e.x - this.player.x;
+      const dy = e.y - this.player.y;
+      if (dx * dx + dy * dy < 70 * 70) {
+        this.teleportPlayer(e.returnX, e.returnY);
+        this.showZoneBanner("마을");
+        return;
+      }
+    }
+
+    // Otherwise: are we next to a building outside? Step inside.
     for (const b of BUILDINGS) {
       const bx = b.tx * TILE + TILE / 2;
       const by = b.ty * TILE + TILE / 2;
@@ -1463,18 +1552,29 @@ export class MainScene extends Phaser.Scene {
   }
 
   private enterBuilding(b: BuildingSpec) {
-    // Interior teleport (real rooms with the NPC moved inside) is the next
-    // chapter. V1 fires a centered banner so the building feels "entered"
-    // and the resident NPC greets you over the chat log.
-    const shortName = b.npcName.replace(/^(이장|잡화점|대장장이) /, "");
+    const dest = this.buildingEntryDest.get(b.key);
+    if (!dest) return;
     const buildingLabel =
       b.key === "bldg_town_hall" ? "마을회관"
         : b.key === "bldg_store" ? "잡화점"
         : b.key === "bldg_blacksmith" ? "대장간"
         : "건물";
-    this.showZoneBanner(`${buildingLabel} 입장 — ${shortName}`);
-    const line = NPC_LINES[b.npcName];
-    if (line) this.appendChat(`${b.npcName}: ${line}`);
+    this.teleportPlayer(dest.x, dest.y);
+    this.showZoneBanner(buildingLabel);
+  }
+
+  private teleportPlayer(x: number, y: number) {
+    this.cameras.main.flash(240, 0, 0, 0);
+    this.player.setPosition(x, y);
+    if (this.net?.connected) {
+      this.net.sendMove(x, y, this.dir, false);
+    }
+    // Sync the zone tracker only when landing in the outside world. Interior
+    // teleports run their own banner so we don't trigger a duplicate one on
+    // the very next frame.
+    if (y <= WORLD_H) {
+      this.lastZone = this.currentZone();
+    }
   }
 
   private tryHarvest() {
