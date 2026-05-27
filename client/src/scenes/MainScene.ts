@@ -172,6 +172,8 @@ export class MainScene extends Phaser.Scene {
   private bakedTextureCounter = 0;
   private ready = false;
   private swinging = false;
+  private dashing = false;
+  private lastDashAt = 0;
   private lastZone: "village" | "logging" | "mine" = "village";
   private zoneBanner?: Phaser.GameObjects.Text;
   private minimapZones: MinimapZone[] = [
@@ -362,6 +364,18 @@ export class MainScene extends Phaser.Scene {
       this.nameTag.setPosition(this.player.x, this.player.y - 5);
       this.syncRemotes();
       this.maybeSendMove(time, false);
+      this.updateMinimap();
+      return;
+    }
+    if (this.dashing) {
+      // Dash tween drives x/y directly — skip input + velocity but keep
+      // nameplate/minimap/network in sync.
+      this.player.setVelocity(0, 0);
+      this.player.setDepth(this.player.y);
+      this.nameTag.setPosition(this.player.x, this.player.y - 5);
+      this.applyPlayerAnimation(this.player, this.dir, true, true);
+      this.syncRemotes();
+      this.maybeSendMove(time, true);
       this.updateMinimap();
       return;
     }
@@ -1280,6 +1294,10 @@ export class MainScene extends Phaser.Scene {
   }
 
   private castSkill(slot: string) {
+    if (slot === "S") {
+      this.tryDash();
+      return;
+    }
     const toast = this.add
       .text(480, 380, `스킬 [${slot}] — 곧 추가됩니다`, {
         fontFamily: "Galmuri11, monospace",
@@ -1300,6 +1318,35 @@ export class MainScene extends Phaser.Scene {
       yoyo: true,
       hold: 650,
       onComplete: () => toast.destroy(),
+    });
+  }
+
+  private tryDash() {
+    if (this.swinging || this.dashing) return;
+    const now = this.time.now;
+    const DASH_COOLDOWN_MS = 2500;
+    if (now - this.lastDashAt < DASH_COOLDOWN_MS) return;
+    this.lastDashAt = now;
+
+    const DX = [0, 0.7, 1, 0.7, 0, -0.7, -1, -0.7];
+    const DY = [1, 0.7, 0, -0.7, -1, -0.7, 0, 0.7];
+    const dx = DX[this.dir] ?? 0;
+    const dy = DY[this.dir] ?? 0;
+    const DASH_DIST = 110;
+    const targetX = Phaser.Math.Clamp(this.player.x + dx * DASH_DIST, 0, WORLD_W);
+    const targetY = Phaser.Math.Clamp(this.player.y + dy * DASH_DIST, 0, WORLD_H);
+
+    this.dashing = true;
+    this.cameras.main.shake(110, 0.004);
+    this.tweens.add({
+      targets: this.player,
+      x: targetX,
+      y: targetY,
+      duration: 180,
+      ease: "Cubic.easeOut",
+      onComplete: () => {
+        this.dashing = false;
+      },
     });
   }
 
