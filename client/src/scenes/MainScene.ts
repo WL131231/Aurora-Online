@@ -273,6 +273,10 @@ export class MainScene extends Phaser.Scene {
     this.player.setCollideWorldBounds(true);
     const pbody = this.player.body as Phaser.Physics.Arcade.Body;
     pbody.setSize(20, 8).setOffset(20, 46);
+    const tint = this.registry.get("playerTint") as number | undefined;
+    if (typeof tint === "number" && tint !== 0xffffff) {
+      this.player.setTint(tint);
+    }
 
     const nameTagKey = this.bakeLabel(this.playerName, {
       color: "#ffffff",
