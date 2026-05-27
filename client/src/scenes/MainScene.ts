@@ -13,7 +13,11 @@ import type { Hotbar, Inventory } from "../game/inventory";
 import type { Hud, MinimapZone } from "../ui/hud";
 
 const TILE = 32;
-const MAP_W = 50;
+// World is a 150-tile-wide strip split into 3 zones:
+// logging (X 0..49) | village (X 50..99) | mine (X 100..149).
+// The whole current screen worth of tiles is one zone — walking off the
+// edge of the village transitions you into the next zone seamlessly.
+const MAP_W = 150;
 const MAP_H = 50;
 const WORLD_W = MAP_W * TILE;
 const WORLD_H = MAP_H * TILE;
@@ -94,12 +98,11 @@ interface BuildingSpec {
   npcName: string;      // display name above NPC
 }
 const BUILDINGS: BuildingSpec[] = [
-  // ty values chosen so the 2x-scaled buildings don't overlap the castle
-  // (north), fountain (center), or each other. Buildings sit on tx 20/29
-  // to flank the road which runs through tile 25.
-  { key: "bldg_town_hall", tx: 25, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨" },
-  { key: "bldg_store",     tx: 20, ty: 32, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨"  },
-  { key: "bldg_blacksmith",tx: 29, ty: 32, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨" },
+  // tx values sit inside the village zone (X 50..99). Town hall flanks the
+  // road centerline (tile 75); store + blacksmith flank the plaza further south.
+  { key: "bldg_town_hall", tx: 75, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨" },
+  { key: "bldg_store",     tx: 70, ty: 32, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨"  },
+  { key: "bldg_blacksmith",tx: 79, ty: 32, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨" },
 ];
 
 const NPC_LINES: Record<string, string> = {

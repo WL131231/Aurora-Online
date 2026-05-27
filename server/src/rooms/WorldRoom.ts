@@ -2,7 +2,9 @@ import { Client, Room } from "colyseus";
 import { Harvestable, Player, WorldState } from "../schemas/WorldState.js";
 
 const TILE = 32;
-const MAP_W = 50;
+// World is one continuous 150-tile-wide strip split into 3 zones:
+// logging (X 0..49) | village (X 50..99) | mine (X 100..149).
+const MAP_W = 150;
 const MAP_H = 50;
 const WORLD_W = MAP_W * TILE;
 const WORLD_H = MAP_H * TILE;
