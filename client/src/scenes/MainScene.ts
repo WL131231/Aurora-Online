@@ -163,6 +163,7 @@ export class MainScene extends Phaser.Scene {
   private ready = false;
   private swinging = false;
   private lastZone: "village" | "logging" | "mine" = "village";
+  private zoneBanner?: Phaser.GameObjects.Text;
   private minimapZones: MinimapZone[] = [
     { x: 0, y: 0, w: ZONE_FARM_X_MAX * TILE, h: WORLD_H, color: "#c2b07d" },
     {
@@ -1135,15 +1136,44 @@ export class MainScene extends Phaser.Scene {
     return "village";
   }
 
-  // Camera flashes + chat note when the player walks across a zone border.
-  // No teleport — the world is contiguous; the flash just sells the "new map"
-  // feel partner asked for.
+  // Camera flashes + a big center banner when the player crosses a zone
+  // border. No teleport — the world is contiguous; the banner just sells the
+  // "new map" feel partner asked for.
   private checkZoneTransition() {
     const zone = this.currentZone();
     if (zone === this.lastZone) return;
     this.lastZone = zone;
     this.cameras.main.flash(260, 0, 0, 0);
-    this.appendChat(`* ${ZONE_LABEL[zone]} 진입`);
+    this.showZoneBanner(ZONE_LABEL[zone]);
+  }
+
+  private showZoneBanner(name: string) {
+    this.zoneBanner?.destroy();
+    const banner = this.add
+      .text(480, 160, `[${name}]`, {
+        fontFamily: "PFStardust, Galmuri11, monospace",
+        fontSize: "28px",
+        color: "#fff8d0",
+        backgroundColor: "rgba(0,0,0,0.72)",
+        padding: { x: 28, y: 14 },
+        resolution: 2,
+      })
+      .setOrigin(0.5, 0.5)
+      .setScrollFactor(0)
+      .setDepth(100002)
+      .setAlpha(0);
+    this.zoneBanner = banner;
+    this.tweens.add({
+      targets: banner,
+      alpha: 1,
+      duration: 220,
+      yoyo: true,
+      hold: 1200,
+      onComplete: () => {
+        banner.destroy();
+        if (this.zoneBanner === banner) this.zoneBanner = undefined;
+      },
+    });
   }
 
   private tryBuildingEnter() {
