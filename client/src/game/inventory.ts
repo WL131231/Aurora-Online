@@ -58,19 +58,25 @@ export class Inventory extends Emitter {
 }
 
 export const HOTBAR_SLOTS = 8;
+export const HOTBAR_PRESETS = 8;
 
 export class Hotbar extends Emitter {
-  private slots: Array<string | null> = new Array(HOTBAR_SLOTS).fill(null);
+  // 8 presets × 8 slots — Z9별 style action bar.
+  private presets: Array<Array<string | null>> = Array.from(
+    { length: HOTBAR_PRESETS },
+    () => new Array(HOTBAR_SLOTS).fill(null),
+  );
+  private activePresetIdx = 0;
   private selectedIndex = 0;
 
   setSlot(index: number, itemId: string | null) {
     if (index < 0 || index >= HOTBAR_SLOTS) return;
-    this.slots[index] = itemId;
+    this.presets[this.activePresetIdx][index] = itemId;
     this.emit();
   }
 
   getSlot(index: number): ItemDef | null {
-    const id = this.slots[index];
+    const id = this.presets[this.activePresetIdx][index];
     return id ? ITEMS[id] ?? null : null;
   }
 
@@ -91,5 +97,20 @@ export class Hotbar extends Emitter {
 
   size(): number {
     return HOTBAR_SLOTS;
+  }
+
+  setActivePreset(idx: number) {
+    if (idx < 0 || idx >= HOTBAR_PRESETS) return;
+    if (this.activePresetIdx === idx) return;
+    this.activePresetIdx = idx;
+    this.emit();
+  }
+
+  getActivePreset(): number {
+    return this.activePresetIdx;
+  }
+
+  presetCount(): number {
+    return HOTBAR_PRESETS;
   }
 }

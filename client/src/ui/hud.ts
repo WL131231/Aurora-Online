@@ -48,6 +48,20 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
   const root = document.createElement("div");
   root.className = "aurora-hud";
 
+  // Preset row (F1-F8) — sits above the slot row, like a Z9별 action bar.
+  const presetRowEl = document.createElement("div");
+  presetRowEl.className = "aurora-preset-row";
+  root.appendChild(presetRowEl);
+  const presetButtons: HTMLElement[] = [];
+  for (let i = 0; i < hotbar.presetCount(); i++) {
+    const btn = document.createElement("div");
+    btn.className = "aurora-preset-slot";
+    btn.textContent = `F${i + 1}`;
+    btn.addEventListener("click", () => hotbar.setActivePreset(i));
+    presetRowEl.appendChild(btn);
+    presetButtons.push(btn);
+  }
+
   const hotbarEl = document.createElement("div");
   hotbarEl.className = "aurora-hotbar";
   root.appendChild(hotbarEl);
@@ -176,11 +190,15 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
 
   function renderHotbar() {
     const selected = hotbar.getSelectedIndex();
+    const activePreset = hotbar.getActivePreset();
     for (let i = 0; i < HOTBAR_SLOTS; i++) {
       const item = hotbar.getSlot(i);
       const count = item ? inventory.count(item.id) : 0;
       hotbarSlots[i].classList.toggle("selected", i === selected);
       renderSlotContent(hotbarSlots[i], item, count);
+    }
+    for (let i = 0; i < presetButtons.length; i++) {
+      presetButtons[i].classList.toggle("active", i === activePreset);
     }
   }
 
@@ -229,6 +247,15 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
     if (digit >= 1 && digit <= HOTBAR_SLOTS) {
       hotbar.select(digit - 1);
       e.preventDefault();
+      return;
+    }
+    // F1~F8 → switch preset (Z9별-style action-bar bank).
+    if (e.code.length >= 2 && e.code.length <= 3 && e.code.startsWith("F")) {
+      const n = parseInt(e.code.slice(1), 10);
+      if (n >= 1 && n <= hotbar.presetCount()) {
+        hotbar.setActivePreset(n - 1);
+        e.preventDefault();
+      }
     }
   }
   window.addEventListener("keydown", onKey);

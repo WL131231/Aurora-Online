@@ -76,6 +76,40 @@ canvas {
   pointer-events: auto;
 }
 
+/* Preset row (F1-F8) above the hotbar */
+.aurora-preset-row {
+  position: absolute;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 3px;
+}
+.aurora-preset-slot {
+  width: 32px;
+  height: 22px;
+  background: linear-gradient(180deg, #4a2c10, #2a1808);
+  border: 1px solid #2a1808;
+  border-radius: 3px;
+  color: #c4a868;
+  font-family: "Galmuri11", monospace;
+  font-size: 10px;
+  text-align: center;
+  line-height: 22px;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px #8b5a2a inset, 0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 60ms ease;
+  user-select: none;
+}
+.aurora-preset-slot:hover {
+  transform: translateY(-1px);
+}
+.aurora-preset-slot.active {
+  background: linear-gradient(180deg, #ffd966, #c4a014);
+  color: #2a1808;
+  box-shadow: 0 0 0 1px #fff0a8 inset, 0 0 6px #ffd966;
+}
+
 /* Hotbar — dark wood plank with embossed frame */
 .aurora-hotbar {
   position: absolute;
