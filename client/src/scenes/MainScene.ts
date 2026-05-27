@@ -53,8 +53,9 @@ const PROP_FRAME = 48;
 const TREE_FRAMES = [0, 1, 2, 3, 4, 5, 6, 7];
 // Large props that should NOT scale (already big enough at native size), collidable
 const OBSTACLE_FRAMES = [11, 14];
-// Walk-through decorations (no collision, native size)
-const DECORATION_FRAMES = [9, 10, 12, 13, 15];
+// Decoration frame indices kept as documentation; specific zones pick their
+// own subsets in buildDecorations().
+// 9=smallBush 10=largeBush 12=smallRocks 13=mushrooms 14=stump 15=wildflowers
 
 // PixelLab character sprite sheets
 const PLAYER_FRAME = 60;
