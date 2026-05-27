@@ -77,28 +77,13 @@ const ORE_NODES: Array<{ type: ResourceType; textureKey: string; count: number }
   { type: "gold_node", textureKey: "node_gold", count: 3 },
 ];
 
-// Gates between village ↔ logging (west) and village ↔ mine (east).
-interface PortalSpec {
-  key: "west" | "east";
-  x: number;
-  y: number;
-  label: string;
-}
-const PORTAL_Y_TILE = 25;
-const PORTALS: PortalSpec[] = [
-  {
-    key: "west",
-    x: (Math.floor(MAP_W / 3) + 1) * TILE - TILE / 2,
-    y: PORTAL_Y_TILE * TILE,
-    label: "벌목장 입구",
-  },
-  {
-    key: "east",
-    x: Math.floor((MAP_W * 2) / 3) * TILE + TILE / 2,
-    y: PORTAL_Y_TILE * TILE,
-    label: "광산 입구",
-  },
-];
+// Zone transition is by walking across the village's west/east border:
+// camera flashes when the player's current zone changes (no portal sprite).
+const ZONE_LABEL: Record<string, string> = {
+  village: "마을",
+  logging: "벌목장",
+  mine: "광산",
+};
 
 // Village buildings (top-down 3/4 perspective). Each is placed once.
 interface BuildingSpec {
@@ -109,9 +94,12 @@ interface BuildingSpec {
   npcName: string;      // display name above NPC
 }
 const BUILDINGS: BuildingSpec[] = [
-  { key: "bldg_town_hall", tx: 24, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨" },
-  { key: "bldg_store",     tx: 21, ty: 30, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨"  },
-  { key: "bldg_blacksmith",tx: 28, ty: 30, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨" },
+  // ty values chosen so the 2x-scaled buildings don't overlap the castle
+  // (north), fountain (center), or each other. Buildings sit on tx 20/29
+  // to flank the road which runs through tile 25.
+  { key: "bldg_town_hall", tx: 25, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨" },
+  { key: "bldg_store",     tx: 20, ty: 32, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨"  },
+  { key: "bldg_blacksmith",tx: 29, ty: 32, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨" },
 ];
 
 const NPC_LINES: Record<string, string> = {
@@ -120,7 +108,6 @@ const NPC_LINES: Record<string, string> = {
   "대장장이 노씨": "도구가 무뎌졌으면 가져오게. 강화 시스템도 곧 준비할 테니.",
 };
 const NPC_TALK_RANGE_SQ = 70 * 70;
-const PORTAL_USE_RANGE_SQ = 60 * 60;
 
 interface RemoteEntity {
   sprite: Phaser.GameObjects.Sprite;
@@ -172,6 +159,7 @@ export class MainScene extends Phaser.Scene {
   private bakedTextureCounter = 0;
   private ready = false;
   private swinging = false;
+  private lastZone: "village" | "logging" | "mine" = "village";
   private minimapZones: MinimapZone[] = [
     { x: 0, y: 0, w: ZONE_FARM_X_MAX * TILE, h: WORLD_H, color: "#c2b07d" },
     {
@@ -221,11 +209,18 @@ export class MainScene extends Phaser.Scene {
     for (const ore of ORE_NODES) {
       this.load.image(ore.textureKey, `/assets/props/${ore.textureKey}.png`);
     }
-    // Village buildings (used only when the full village map background is absent).
+    // Village buildings.
     this.load.image("bldg_town_hall", "/assets/buildings/town_hall.png");
     this.load.image("bldg_store", "/assets/buildings/store.png");
     this.load.image("bldg_blacksmith", "/assets/buildings/blacksmith.png");
-    // Full painted village map background — covers the whole village zone if present.
+    // Castle (gatehouse) at the north end of the village.
+    this.load.image("castle", "/assets/buildings/castle.png");
+    // Market props on the central plaza.
+    this.load.image("fountain", "/assets/props/fountain.png");
+    this.load.image("stall_yellow", "/assets/props/stall_yellow.png");
+    this.load.image("stall_red", "/assets/props/stall_red.png");
+    this.load.image("stall_green", "/assets/props/stall_green.png");
+    // Painted village reference (not painted as a layer — kept for reference).
     this.load.image("map_village", "/assets/maps/village.png");
     // NPC south-facing idles (full 8-direction support can be added later)
     this.load.image("npc_chief_lee", "/assets/npcs/chief_lee.png");
@@ -366,7 +361,8 @@ export class MainScene extends Phaser.Scene {
     this.nameTag.setPosition(this.player.x, this.player.y - 5);
 
     this.applyPlayerAnimation(this.player, this.dir, moving, running);
-    this.tryPortal();
+    this.tryBuildingEnter();
+    this.checkZoneTransition();
 
     this.syncRemotes();
     this.maybeSendMove(time, moving);
@@ -1008,24 +1004,101 @@ export class MainScene extends Phaser.Scene {
   }
 
   private buildVillage() {
-    // village.png is kept as a reference image only — the actual village is
-    // reconstructed in-engine from individual assets (castle, road, buildings,
-    // market stalls, fountain, etc.). See `client/public/assets/maps/village.png`.
+    // Layout reconstructs the partner-supplied reference image
+    // (assets/maps/village.png) in-engine using individual sprites:
+    //   - cobblestone road runs N→S through the village
+    //   - castle gatehouse at the north end
+    //   - 3 buildings (town hall, store, blacksmith) flank the plaza
+    //   - fountain + 3 market stalls form the central plaza
+    //   - dense tree belt lines the village along both edges
 
+    // 1. Cobblestone road (north-south through the village center).
+    const villageCenterTileX = Math.floor((ZONE_FARM_X_MAX + ZONE_VILLAGE_X_MAX + 1) / 2);
+    const roadCx = villageCenterTileX * TILE + TILE / 2;
+    const roadHalfW = TILE * 2; // 4-tile wide road
+    const road = this.add.graphics();
+    road.fillStyle(0x8a857a, 1);
+    road.fillRect(roadCx - roadHalfW, 0, roadHalfW * 2, WORLD_H);
+    road.lineStyle(2, 0x5e5a52, 1);
+    road.lineBetween(roadCx - roadHalfW, 0, roadCx - roadHalfW, WORLD_H);
+    road.lineBetween(roadCx + roadHalfW, 0, roadCx + roadHalfW, WORLD_H);
+    // Faint cobble dots every 2 tiles for texture.
+    road.fillStyle(0x6e6a60, 0.6);
+    for (let y = 16; y < WORLD_H; y += TILE) {
+      for (let x = roadCx - roadHalfW + 6; x < roadCx + roadHalfW; x += 16) {
+        road.fillRect(x, y, 2, 2);
+      }
+    }
+    road.setDepth(-800);
+
+    // 2. Castle gatehouse — north anchor of the village.
+    const castleTileY = 5;
+    if (this.textures.exists("castle")) {
+      const castle = this.add.sprite(roadCx, castleTileY * TILE, "castle");
+      castle.setOrigin(0.5, 0.5);
+      castle.setDepth(castleTileY * TILE);
+    }
+
+    // 3. Central plaza fountain.
+    const fountainTileY = 25;
+    if (this.textures.exists("fountain")) {
+      const fountain = this.add.sprite(roadCx, fountainTileY * TILE, "fountain");
+      fountain.setOrigin(0.5, 0.9);
+      fountain.setScale(2);
+      fountain.setDepth(fountainTileY * TILE);
+    }
+
+    // 4. Three market stalls around the fountain.
+    const stalls: Array<{ tx: number; ty: number; key: string }> = [
+      { tx: villageCenterTileX - 3, ty: fountainTileY + 1, key: "stall_yellow" },
+      { tx: villageCenterTileX + 3, ty: fountainTileY + 1, key: "stall_red" },
+      { tx: villageCenterTileX,     ty: fountainTileY - 3, key: "stall_green" },
+    ];
+    for (const s of stalls) {
+      if (!this.textures.exists(s.key)) continue;
+      const wx = s.tx * TILE + TILE / 2;
+      const wy = s.ty * TILE + TILE / 2;
+      const stall = this.add.sprite(wx, wy, s.key);
+      stall.setOrigin(0.5, 0.9);
+      stall.setScale(1.5);
+      stall.setDepth(wy);
+    }
+
+    // 5. Dense tree belts along the inner edges of the village zone.
+    // Skip the small-oak (0) and birch (7) frames — they render weird thin
+    // trunks at this scale that look like broken vertical bars.
+    const beltTileLeft = ZONE_FARM_X_MAX + 1;     // first tile inside village
+    const beltTileRight = ZONE_VILLAGE_X_MAX;     // last tile inside village
+    const beltVariants = [1, 2, 3, 4, 5, 6];
+    for (let ty = 4; ty < MAP_H - 1; ty += 2) {
+      for (const tx of [beltTileLeft, beltTileLeft + 1, beltTileRight - 1, beltTileRight]) {
+        if (ty >= fountainTileY - 4 && ty <= fountainTileY + 4) continue;
+        const variant = beltVariants[(tx + ty) % beltVariants.length];
+        const tree = this.add.sprite(tx * TILE + TILE / 2, ty * TILE + TILE / 2, "props", variant);
+        tree.setOrigin(0.5, 0.9);
+        tree.setScale(1.75);
+        tree.setDepth(ty * TILE);
+      }
+    }
+
+    // 6. Buildings (3 sided around the plaza).
     for (const b of BUILDINGS) {
       const wx = b.tx * TILE + TILE / 2;
       const wy = b.ty * TILE + TILE / 2;
       if (this.textures.exists(b.key)) {
         const bldg = this.add.sprite(wx, wy, b.key);
         bldg.setOrigin(0.5, 0.9);
-        bldg.setScale(2);
+        // Buildings are 256px source (no upscaling stretch) — scale to ~0.75
+        // so two of them flank the road comfortably inside the 16-tile-wide
+        // village zone.
+        bldg.setScale(0.75);
         bldg.setDepth(wy);
       }
       if (b.npcKey && this.textures.exists(b.npcKey)) {
         const nx = wx;
-        // Stand further below the (now doubled-size) building so NPCs are
-        // clearly in front of the door, not clipping into the wall.
-        const ny = wy + TILE * 4;
+        // Stand below the (now larger) building so NPCs are clearly outside
+        // the doorway rather than clipping into the wall.
+        const ny = wy + TILE * 5;
         const npc = this.add.sprite(nx, ny, b.npcKey);
         npc.setOrigin(0.5, 0.85);
         // NPC source canvas is 68px, player frame is 60px — scale so the
@@ -1047,32 +1120,6 @@ export class MainScene extends Phaser.Scene {
         });
       }
     }
-    this.buildPortals();
-  }
-
-  private buildPortals() {
-    for (const p of PORTALS) {
-      // Stone arch (32x64 with darker inner opening).
-      const arch = this.add.graphics();
-      arch.fillStyle(0x4a4a4a, 1);
-      arch.fillRoundedRect(p.x - 22, p.y - 56, 44, 64, 4);
-      arch.lineStyle(2, 0x222222, 1);
-      arch.strokeRoundedRect(p.x - 22, p.y - 56, 44, 64, 4);
-      arch.fillStyle(0x14110b, 0.92);
-      arch.fillRoundedRect(p.x - 14, p.y - 48, 28, 50, 14);
-      arch.setDepth(p.y);
-
-      const labelKey = this.bakeLabel(`${p.label}\n[↑]`, {
-        color: "#fff8d0",
-        fontSize: 9,
-        background: "#3a230f",
-        padX: 5,
-        padY: 3,
-      });
-      const label = this.add.image(p.x, p.y - 64, labelKey);
-      label.setOrigin(0.5, 1);
-      label.setDepth(p.y + 1);
-    }
   }
 
   private currentZone(): "village" | "logging" | "mine" {
@@ -1082,33 +1129,38 @@ export class MainScene extends Phaser.Scene {
     return "village";
   }
 
-  private tryPortal() {
+  // Camera flashes + chat note when the player walks across a zone border.
+  // No teleport — the world is contiguous; the flash just sells the "new map"
+  // feel partner asked for.
+  private checkZoneTransition() {
+    const zone = this.currentZone();
+    if (zone === this.lastZone) return;
+    this.lastZone = zone;
+    this.cameras.main.flash(260, 0, 0, 0);
+    this.appendChat(`* ${ZONE_LABEL[zone]} 진입`);
+  }
+
+  private tryBuildingEnter() {
     if (!this.cursors.up) return;
     if (!Phaser.Input.Keyboard.JustDown(this.cursors.up)) return;
-    for (const p of PORTALS) {
-      const dx = p.x - this.player.x;
-      const dy = p.y - this.player.y;
-      if (dx * dx + dy * dy < PORTAL_USE_RANGE_SQ) {
-        this.useGate(p.key);
+    for (const b of BUILDINGS) {
+      const bx = b.tx * TILE + TILE / 2;
+      const by = b.ty * TILE + TILE / 2;
+      const dx = bx - this.player.x;
+      const dy = by - this.player.y;
+      if (dx * dx + dy * dy < 140 * 140) {
+        this.enterBuilding(b);
         return;
       }
     }
   }
 
-  private useGate(key: "west" | "east") {
-    const zone = this.currentZone();
-    let destX: number;
-    const destY = PORTAL_Y_TILE * TILE;
-    if (key === "west") {
-      destX = zone === "village" ? 8 * TILE : (ZONE_FARM_X_MAX + 2) * TILE;
-    } else {
-      destX = zone === "village" ? 42 * TILE : (ZONE_VILLAGE_X_MAX - 1) * TILE;
-    }
-    this.cameras.main.flash(220, 0, 0, 0);
-    this.player.setPosition(destX, destY);
-    if (this.net.connected) {
-      this.net.sendMove(destX, destY, this.dir, false);
-    }
+  private enterBuilding(b: BuildingSpec) {
+    // Interior zones (full rooms) ship in the next chapter. For now a placeholder
+    // greeting fires so the building feels alive and the resident NPC speaks up.
+    this.appendChat(`[${b.npcName}의 건물 입구] 내부는 다음 업데이트에 열립니다.`);
+    const line = NPC_LINES[b.npcName];
+    if (line) this.appendChat(`${b.npcName}: ${line}`);
   }
 
   private tryHarvest() {
