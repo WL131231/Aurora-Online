@@ -291,6 +291,8 @@ export class MainScene extends Phaser.Scene {
     this.load.image("npc_chief_lee", "/assets/npcs/chief_lee.png");
     this.load.image("npc_mrs_lee", "/assets/npcs/mrs_lee.png");
     this.load.image("npc_blacksmith_roh", "/assets/npcs/blacksmith_roh.png");
+    // Animals (V1 = chicken only; cow is still rendering, ship with C2)
+    this.load.image("animal_chicken", "/assets/animals/chicken.png");
     for (const tool of CHOP_TOOLS) {
       this.load.spritesheet(`player_chop_${tool}`, `/assets/characters/player_chop_${tool}.png`, {
         frameWidth: PLAYER_FRAME,
@@ -324,6 +326,7 @@ export class MainScene extends Phaser.Scene {
     this.buildDecorations();
     this.harvestables = this.add.group();
     this.buildVillage();
+    this.buildAnimals();
     this.ensureFarmGraphics();
     this.createPlayerAnimations();
 
@@ -1436,6 +1439,24 @@ export class MainScene extends Phaser.Scene {
   }
 
   // Offline fallback only — server seeds the same 6x5 grid when online.
+  // V1 minimal — chickens placed as decorative animals near the farm patches.
+  // Feed / egg-production mechanics ship in a later pass once the basics are
+  // tested in-browser.
+  private buildAnimals() {
+    if (!this.textures.exists("animal_chicken")) return;
+    const spots: Array<[number, number]> = [
+      [88, 35],
+      [89, 36],
+      [88, 37],
+    ];
+    for (const [tx, ty] of spots) {
+      const ch = this.add.sprite(tx * TILE + TILE / 2, ty * TILE + TILE / 2, "animal_chicken");
+      ch.setOrigin(0.5, 0.9);
+      ch.setScale(60 / 48);
+      ch.setDepth(ty * TILE);
+    }
+  }
+
   private buildFarmOffline() {
     const baseTx = 82;
     const baseTy = 36;
