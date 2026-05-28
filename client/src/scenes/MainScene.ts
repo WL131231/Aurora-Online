@@ -120,11 +120,35 @@ const BUILDINGS: BuildingSpec[] = [
     interiorX: 2500, interiorY: INTERIOR_Y_BASE },
 ];
 
-const NPC_LINES: Record<string, string> = {
-  "이장 이씨": "어서 오게, 모험가. 마을은 평화롭지만 곧 할 일이 생길 거야.",
-  "잡화점 이씨": "오늘은 어떤 게 필요해요? 곧 진열대를 채울 예정이에요!",
-  "대장장이 노씨": "도구가 무뎌졌으면 가져오게. 강화 시스템도 곧 준비할 테니.",
+const NPC_LINES_BY_AFFINITY: Record<string, [string, string, string]> = {
+  "이장 이씨": [
+    "어서 오게, 모험가. 마을은 평화롭다네.",
+    "또 왔군. 자네 덕에 마을이 활기차네.",
+    "이젠 자네도 우리 마을의 한 사람이지. 언제든 들르게.",
+  ],
+  "잡화점 이씨": [
+    "안녕하세요. 곧 진열대를 채울 예정이에요!",
+    "또 오셨네요. 단골 분이라 반갑네요.",
+    "단골 손님! 좋은 거 들어오면 따로 챙겨둘게요.",
+  ],
+  "대장장이 노씨": [
+    "도구가 무뎌졌으면 가져오게.",
+    "자주 보는군. 도구는 잘 관리하나?",
+    "자네라면 특별 강화도 해줄 수 있지.",
+  ],
 };
+const NPC_LINES: Record<string, string> = {
+  "이장 이씨": NPC_LINES_BY_AFFINITY["이장 이씨"][0],
+  "잡화점 이씨": NPC_LINES_BY_AFFINITY["잡화점 이씨"][0],
+  "대장장이 노씨": NPC_LINES_BY_AFFINITY["대장장이 노씨"][0],
+};
+function lineForAffinity(npcName: string, affinity: number): string {
+  const lines = NPC_LINES_BY_AFFINITY[npcName];
+  if (!lines) return "...";
+  if (affinity >= 60) return lines[2];
+  if (affinity >= 30) return lines[1];
+  return lines[0];
+}
 const NPC_TALK_RANGE_SQ = 70 * 70;
 
 interface RemoteEntity {
@@ -153,6 +177,7 @@ export class MainScene extends Phaser.Scene {
   private harvestKey!: Phaser.Input.Keyboard.Key;
   private runKey!: Phaser.Input.Keyboard.Key;
   private skillKeys: Phaser.Input.Keyboard.Key[] = [];
+  private giftKey!: Phaser.Input.Keyboard.Key;
   private nameTag!: Phaser.GameObjects.Image;
   private harvestables!: Phaser.GameObjects.Group;
   // id → sprite map for server-synced harvestables (online mode only).
@@ -368,6 +393,8 @@ export class MainScene extends Phaser.Scene {
       key.on("down", () => this.castSkill(label));
       this.skillKeys.push(key);
     }
+    this.giftKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.G);
+    this.giftKey.on("down", () => this.tryNpcGift());
 
     this.setupHud();
     this.setupChatInput();
@@ -1552,6 +1579,73 @@ export class MainScene extends Phaser.Scene {
     this.redrawFarm();
   }
 
+  private getOwnAffinity(npcName: string): number {
+    if (!this.net?.connected || !this.net.sessionId) return 0;
+    const players = this.net.room?.state?.players as unknown as {
+      get?: (k: string) => { npcAffinity?: { get?: (k: string) => number | undefined } } | undefined;
+    } | undefined;
+    const me = players?.get?.(this.net.sessionId);
+    const aff = me?.npcAffinity?.get?.(npcName);
+    return typeof aff === "number" ? Math.floor(aff) : 0;
+  }
+
+  private tryNpcGift() {
+    const hotbar = this.registry.get("hotbar") as Hotbar | undefined;
+    const inventory = this.registry.get("inventory") as Inventory | undefined;
+    if (!hotbar || !inventory) return;
+    const item = hotbar.getSelected();
+    if (!item) {
+      this.toast("선물할 아이템을 핫바에서 선택하세요");
+      return;
+    }
+    if (item.kind !== "resource") {
+      this.toast("도구는 선물할 수 없습니다");
+      return;
+    }
+    if (inventory.count(item.id) <= 0) {
+      this.toast(`${item.name} 없음`);
+      return;
+    }
+    for (const npc of this.npcs) {
+      const dx = npc.sprite.x - this.player.x;
+      const dy = npc.sprite.y - this.player.y;
+      if (dx * dx + dy * dy < NPC_TALK_RANGE_SQ) {
+        if (this.net?.connected) {
+          this.net.sendNpcGift(npc.name, item.id);
+        } else {
+          inventory.setFromServer(item.id, inventory.count(item.id) - 1);
+        }
+        this.appendChat(`${npc.name}에게 ${item.name} 선물! (친밀도 ↑)`);
+        return;
+      }
+    }
+    this.toast("주변에 NPC가 없습니다");
+  }
+
+  private toast(text: string) {
+    const t = this.add
+      .text(480, 380, text, {
+        fontFamily: "Galmuri11, monospace",
+        fontSize: "12px",
+        color: "#fff8d0",
+        backgroundColor: "rgba(0,0,0,0.7)",
+        padding: { x: 12, y: 6 },
+        resolution: 2,
+      })
+      .setOrigin(0.5, 0.5)
+      .setScrollFactor(0)
+      .setDepth(100002)
+      .setAlpha(0);
+    this.tweens.add({
+      targets: t,
+      alpha: 1,
+      duration: 100,
+      yoyo: true,
+      hold: 650,
+      onComplete: () => t.destroy(),
+    });
+  }
+
   private castSkill(slot: string) {
     if (slot === "S") {
       this.tryDash();
@@ -1673,7 +1767,8 @@ export class MainScene extends Phaser.Scene {
       const dx = npc.sprite.x - this.player.x;
       const dy = npc.sprite.y - this.player.y;
       if (dx * dx + dy * dy < NPC_TALK_RANGE_SQ) {
-        this.appendChat(`${npc.name}: ${npc.line}`);
+        const aff = this.getOwnAffinity(npc.name);
+        this.appendChat(`${npc.name} (♥${aff}/100): ${lineForAffinity(npc.name, aff)}`);
         return;
       }
     }

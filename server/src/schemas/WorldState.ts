@@ -11,6 +11,8 @@ export class Player extends Schema {
   // 8 hotbar slots; empty string = empty slot
   @type(["string"]) hotbar = new ArraySchema<string>();
   @type("uint8") selectedHotbar = 0;
+  // NPC name → affinity 0..100. Gifts raise it, friendship dialogs unlock at thresholds.
+  @type({ map: "number" }) npcAffinity = new MapSchema<number>();
 }
 
 export class FarmPatch extends Schema {

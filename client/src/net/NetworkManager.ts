@@ -194,6 +194,11 @@ export class NetworkManager {
     this.room.send("farm_harvest", { id });
   }
 
+  sendNpcGift(npcName: string, itemId: string) {
+    if (!this.connected || !this.room) return;
+    this.room.send("npc_gift", { npcName, itemId });
+  }
+
   private subscribeOwnInventory(player: RemotePlayer) {
     if (!this.$) return;
     const inv = (player as unknown as { inventory: object }).inventory;

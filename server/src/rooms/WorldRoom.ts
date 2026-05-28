@@ -63,6 +63,7 @@ type ChatMessage = { text: string };
 type HarvestMessage = { id: string; toolId: string };
 type HotbarSelectMessage = { index: number };
 type FarmActionMessage = { id: string };
+type NpcGiftMessage = { npcName: string; itemId: string };
 
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
 const MAX_NAME = 16;
@@ -125,6 +126,20 @@ export class WorldRoom extends Room<WorldState> {
     this.onMessage("farm_harvest", (client, msg: FarmActionMessage) => {
       this.handleFarmHarvest(client, msg);
     });
+    this.onMessage("npc_gift", (client, msg: NpcGiftMessage) => {
+      this.handleNpcGift(client, msg);
+    });
+  }
+
+  private handleNpcGift(client: Client, msg: NpcGiftMessage) {
+    if (!msg || typeof msg.npcName !== "string" || typeof msg.itemId !== "string") return;
+    const p = this.state.players.get(client.sessionId);
+    if (!p) return;
+    const cur = p.inventory.get(msg.itemId) ?? 0;
+    if (cur <= 0) return;
+    p.inventory.set(msg.itemId, cur - 1);
+    const curAff = p.npcAffinity.get(msg.npcName) ?? 0;
+    p.npcAffinity.set(msg.npcName, Math.min(100, curAff + 5));
   }
 
   private seedFarmPatches() {
