@@ -199,6 +199,8 @@ export class MainScene extends Phaser.Scene {
   private lastDashAt = 0;
   private lastZone: "village" | "logging" | "mine" = "village";
   private zoneBanner?: Phaser.GameObjects.Text;
+  private interactionHintGfx?: Phaser.GameObjects.Graphics;
+  private interactionHintText?: Phaser.GameObjects.Text;
   private minimapZones: MinimapZone[] = [
     { x: 0, y: 0, w: ZONE_FARM_X_MAX * TILE, h: WORLD_H, color: "#c2b07d" },
     {
@@ -300,6 +302,23 @@ export class MainScene extends Phaser.Scene {
     this.buildVillage();
     this.ensureFarmGraphics();
     this.createPlayerAnimations();
+
+    // Interaction hint (floating arrow + label over the nearest interactable).
+    this.interactionHintGfx = this.add.graphics();
+    this.interactionHintGfx.setDepth(99999);
+    this.interactionHintGfx.setVisible(false);
+    this.interactionHintText = this.add
+      .text(0, 0, "", {
+        fontFamily: "Galmuri11, monospace",
+        fontSize: "9px",
+        color: "#fff8d0",
+        backgroundColor: "rgba(20,12,4,0.78)",
+        padding: { x: 5, y: 2 },
+        resolution: 2,
+      })
+      .setOrigin(0.5, 0)
+      .setDepth(99999)
+      .setVisible(false);
 
     const spawnX = WORLD_W / 2;
     const spawnY = WORLD_H / 2;
@@ -443,10 +462,103 @@ export class MainScene extends Phaser.Scene {
     this.tryBuildingEnter();
     this.checkZoneTransition();
     this.updateFarm();
+    this.updateInteractionHint(time);
 
     this.syncRemotes();
     this.maybeSendMove(time, moving);
     this.updateMinimap();
+  }
+
+  // Floating hint above the closest thing the player can interact with.
+  // Generic adventure-game pattern: gentle vertical bob + a short key prompt.
+  private updateInteractionHint(time: number) {
+    const gfx = this.interactionHintGfx;
+    const txt = this.interactionHintText;
+    if (!gfx || !txt) return;
+    const px = this.player.x;
+    const py = this.player.y;
+    const RANGE_SQ = 130 * 130;
+
+    let bestX = 0;
+    let bestY = 0;
+    let bestLabel = "";
+    let best = RANGE_SQ;
+
+    for (const npc of this.npcs) {
+      const dx = npc.sprite.x - px;
+      const dy = npc.sprite.y - py;
+      const d = dx * dx + dy * dy;
+      if (d < best) {
+        best = d;
+        bestX = npc.sprite.x;
+        bestY = npc.sprite.y - 56;
+        bestLabel = "[Space] 대화";
+      }
+    }
+
+    if (this.player.y <= WORLD_H) {
+      for (const b of BUILDINGS) {
+        const bx = b.tx * TILE + TILE / 2;
+        const by = b.ty * TILE + TILE / 2;
+        const dx = bx - px;
+        const dy = by - py;
+        const d = dx * dx + dy * dy;
+        if (d < best) {
+          best = d;
+          bestX = bx;
+          bestY = by - 100;
+          bestLabel = "[↑] 입장";
+        }
+      }
+    }
+
+    for (const e of this.exitPoints) {
+      const dx = e.x - px;
+      const dy = e.y - py;
+      const d = dx * dx + dy * dy;
+      if (d < best) {
+        best = d;
+        bestX = e.x;
+        bestY = e.y - 56;
+        bestLabel = "[↑] 나가기";
+      }
+    }
+
+    for (const p of this.farmPatches.values()) {
+      if (p.state !== "grown") continue;
+      const dx = p.x - px;
+      const dy = p.y - py;
+      const d = dx * dx + dy * dy;
+      if (d < best) {
+        best = d;
+        bestX = p.x;
+        bestY = p.y - 26;
+        bestLabel = "[Space] 수확";
+      }
+    }
+
+    if (best >= RANGE_SQ) {
+      gfx.setVisible(false);
+      txt.setVisible(false);
+      return;
+    }
+
+    const bob = Math.sin(time / 200) * 3;
+    const ax = bestX;
+    const ay = bestY + bob;
+    gfx.clear();
+    gfx.fillStyle(0xfff8d0, 1);
+    gfx.fillTriangle(ax, ay + 8, ax - 7, ay - 2, ax + 7, ay - 2);
+    gfx.fillRect(ax - 2, ay - 9, 4, 7);
+    gfx.lineStyle(1, 0x3a2008, 1);
+    gfx.strokeTriangle(ax, ay + 8, ax - 7, ay - 2, ax + 7, ay - 2);
+    gfx.setDepth(ay + 10);
+    gfx.setVisible(true);
+
+    txt.setText(bestLabel);
+    txt.setPosition(ax, ay + 14);
+    txt.setDepth(ay + 11);
+    txt.setVisible(true);
   }
 
   private updateMinimap() {
