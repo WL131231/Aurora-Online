@@ -198,7 +198,6 @@ export class MainScene extends Phaser.Scene {
   private dashing = false;
   private lastDashAt = 0;
   private lastZone: "village" | "logging" | "mine" = "village";
-  private zoneBanner?: Phaser.GameObjects.Text;
   private interactionHintGfx?: Phaser.GameObjects.Graphics;
   private interactionHintText?: Phaser.GameObjects.Text;
   private minimapZones: MinimapZone[] = [
@@ -1603,35 +1602,6 @@ export class MainScene extends Phaser.Scene {
       ease: "Cubic.easeOut",
       onComplete: () => {
         this.dashing = false;
-      },
-    });
-  }
-
-  private showZoneBanner(name: string) {
-    this.zoneBanner?.destroy();
-    const banner = this.add
-      .text(480, 160, `[${name}]`, {
-        fontFamily: "PFStardust, Galmuri11, monospace",
-        fontSize: "28px",
-        color: "#fff8d0",
-        backgroundColor: "rgba(0,0,0,0.72)",
-        padding: { x: 28, y: 14 },
-        resolution: 2,
-      })
-      .setOrigin(0.5, 0.5)
-      .setScrollFactor(0)
-      .setDepth(100002)
-      .setAlpha(0);
-    this.zoneBanner = banner;
-    this.tweens.add({
-      targets: banner,
-      alpha: 1,
-      duration: 220,
-      yoyo: true,
-      hold: 1200,
-      onComplete: () => {
-        banner.destroy();
-        if (this.zoneBanner === banner) this.zoneBanner = undefined;
       },
     });
   }
