@@ -4,6 +4,7 @@ import type { ItemDef } from "../game/items";
 export interface Hud {
   root: HTMLElement;
   minimap: Minimap;
+  showZoneLoading: (name: string) => void;
   destroy(): void;
 }
 
@@ -83,6 +84,18 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
   inventoryHint.className = "aurora-inventory-hint";
   inventoryHint.textContent = "[E] 닫기  ·  [1-8] 핫바 선택";
   inventoryEl.appendChild(inventoryHint);
+
+  const zoneLoadingEl = document.createElement("div");
+  zoneLoadingEl.className = "aurora-zone-loading hidden";
+  const zoneLoadingTitle = document.createElement("div");
+  zoneLoadingTitle.className = "aurora-zone-loading-title";
+  const zoneLoadingHint = document.createElement("div");
+  zoneLoadingHint.className = "aurora-zone-loading-hint";
+  zoneLoadingHint.textContent = "이동 중...";
+  zoneLoadingEl.appendChild(zoneLoadingTitle);
+  zoneLoadingEl.appendChild(zoneLoadingHint);
+  root.appendChild(zoneLoadingEl);
+  let zoneLoadingTimer: number | null = null;
 
   const minimapCanvas = document.createElement("canvas");
   minimapCanvas.className = "aurora-minimap";
@@ -260,12 +273,26 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
   }
   window.addEventListener("keydown", onKey);
 
+  function showZoneLoading(name: string) {
+    if (zoneLoadingTimer !== null) {
+      window.clearTimeout(zoneLoadingTimer);
+    }
+    zoneLoadingTitle.textContent = name;
+    zoneLoadingEl.classList.remove("hidden");
+    zoneLoadingTimer = window.setTimeout(() => {
+      zoneLoadingEl.classList.add("hidden");
+      zoneLoadingTimer = null;
+    }, 1200);
+  }
+
   return {
     root,
     minimap,
+    showZoneLoading,
     destroy() {
       offInv();
       offHot();
+      if (zoneLoadingTimer !== null) window.clearTimeout(zoneLoadingTimer);
       window.removeEventListener("keydown", onKey);
       root.remove();
     },

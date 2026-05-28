@@ -231,6 +231,37 @@ canvas {
   margin-top: 10px;
 }
 
+/* Full-screen zone loading overlay — shown briefly on zone change or building entry. */
+.aurora-zone-loading {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 12, 4, 0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff8d0;
+  font-family: "PFStardust", "Galmuri11", monospace;
+  opacity: 1;
+  transition: opacity 250ms ease;
+  pointer-events: none;
+  z-index: 200;
+}
+.aurora-zone-loading.hidden {
+  opacity: 0;
+}
+.aurora-zone-loading-title {
+  font-size: 36px;
+  letter-spacing: 4px;
+  text-shadow: 2px 2px 0 #000, -1px -1px 0 #000;
+  margin-bottom: 14px;
+}
+.aurora-zone-loading-hint {
+  font-size: 12px;
+  opacity: 0.7;
+  letter-spacing: 2px;
+}
+
 /* Minimap (top-right) — parchment frame, pixelated dots */
 .aurora-minimap {
   position: absolute;

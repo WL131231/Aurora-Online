@@ -1402,7 +1402,8 @@ export class MainScene extends Phaser.Scene {
     if (zone === this.lastZone) return;
     this.lastZone = zone;
     this.cameras.main.flash(260, 0, 0, 0);
-    this.showZoneBanner(ZONE_LABEL[zone]);
+    const hud = this.registry.get("hud") as Hud | undefined;
+    hud?.showZoneLoading(ZONE_LABEL[zone]);
   }
 
   // Offline fallback only — server seeds the same 6x5 grid when online.
@@ -1645,7 +1646,8 @@ export class MainScene extends Phaser.Scene {
       const dy = e.y - this.player.y;
       if (dx * dx + dy * dy < 70 * 70) {
         this.teleportPlayer(e.returnX, e.returnY);
-        this.showZoneBanner("마을");
+        const hud = this.registry.get("hud") as Hud | undefined;
+        hud?.showZoneLoading("마을");
         return;
       }
     }
@@ -1672,7 +1674,8 @@ export class MainScene extends Phaser.Scene {
         : b.key === "bldg_blacksmith" ? "대장간"
         : "건물";
     this.teleportPlayer(dest.x, dest.y);
-    this.showZoneBanner(buildingLabel);
+    const hud = this.registry.get("hud") as Hud | undefined;
+    hud?.showZoneLoading(buildingLabel);
   }
 
   private teleportPlayer(x: number, y: number) {
