@@ -5,8 +5,11 @@ export interface Hud {
   root: HTMLElement;
   minimap: Minimap;
   showZoneLoading: (name: string) => void;
+  setTime: (gameMinutes: number) => void;
   destroy(): void;
 }
+
+const SEASONS = ["봄", "여름", "가을", "겨울"];
 
 export interface MinimapZone {
   x: number;
@@ -84,6 +87,30 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
   inventoryHint.className = "aurora-inventory-hint";
   inventoryHint.textContent = "[E] 닫기  ·  [1-8] 핫바 선택";
   inventoryEl.appendChild(inventoryHint);
+
+  // Time/season clock (top-right, below minimap).
+  const timeEl = document.createElement("div");
+  timeEl.className = "aurora-time";
+  const timeClockEl = document.createElement("div");
+  timeClockEl.className = "time-clock";
+  timeClockEl.textContent = "--:--";
+  const timeDateEl = document.createElement("div");
+  timeDateEl.className = "time-date";
+  timeDateEl.textContent = "";
+  timeEl.appendChild(timeClockEl);
+  timeEl.appendChild(timeDateEl);
+  root.appendChild(timeEl);
+
+  function setTime(gameMinutes: number) {
+    const minutesInDay = ((gameMinutes % 1440) + 1440) % 1440;
+    const hour = Math.floor(minutesInDay / 60);
+    const minute = Math.floor(minutesInDay % 60);
+    const totalDays = Math.floor(gameMinutes / 1440);
+    const seasonIdx = ((Math.floor(totalDays / 28) % 4) + 4) % 4;
+    const dayOfSeason = (((totalDays % 28) + 28) % 28) + 1;
+    timeClockEl.textContent = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    timeDateEl.textContent = `${SEASONS[seasonIdx]} ${dayOfSeason}일`;
+  }
 
   const zoneLoadingEl = document.createElement("div");
   zoneLoadingEl.className = "aurora-zone-loading hidden";
@@ -289,6 +316,7 @@ export function createHud(inventory: Inventory, hotbar: Hotbar): Hud {
     root,
     minimap,
     showZoneLoading,
+    setTime,
     destroy() {
       offInv();
       offHot();

@@ -75,6 +75,10 @@ export class WorldRoom extends Room<WorldState> {
   onCreate() {
     this.seedHarvestables();
     this.seedFarmPatches();
+    // Game clock: 10 game minutes per real minute (≈ 0.167 game-min per real-sec).
+    this.clock.setInterval(() => {
+      this.state.gameMinutes += 10 / 60;
+    }, 1000);
 
     this.onMessage("move", (client, msg: MoveMessage) => {
       const p = this.state.players.get(client.sessionId);

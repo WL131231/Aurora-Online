@@ -563,6 +563,9 @@ export class MainScene extends Phaser.Scene {
   private updateMinimap() {
     const hud = this.registry.get("hud") as Hud | undefined;
     if (!hud) return;
+    // Server clock — read straight off the state each frame. If offline, time stays at the schema default (06:00).
+    const gm = (this.net?.room?.state as { gameMinutes?: number } | undefined)?.gameMinutes;
+    if (typeof gm === "number") hud.setTime(gm);
     hud.minimap.update({
       worldW: WORLD_W,
       worldH: WORLD_H,

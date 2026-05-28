@@ -43,4 +43,7 @@ export class WorldState extends Schema {
   @type({ map: Player }) players = new MapSchema<Player>();
   @type({ map: Harvestable }) harvestables = new MapSchema<Harvestable>();
   @type({ map: FarmPatch }) farmPatches = new MapSchema<FarmPatch>();
+  // Game-world clock. 1 real second = 10/60 game minutes (so 1 real min = 10 game min).
+  // 1440 game min = 1 game day. 28 game days = 1 season. 4 seasons cycle.
+  @type("number") gameMinutes = 360; // start at game 06:00 (morning)
 }
