@@ -13,21 +13,38 @@ import type { Hotbar, Inventory } from "../game/inventory";
 import type { Hud, MinimapZone } from "../ui/hud";
 
 const TILE = 32;
-// World is a 150-tile-wide strip split into 3 zones:
-// logging (X 0..49) | village (X 50..99) | mine (X 100..149).
-// The whole current screen worth of tiles is one zone — walking off the
-// edge of the village transitions you into the next zone seamlessly.
-const MAP_W = 150;
-const MAP_H = 50;
-const WORLD_W = MAP_W * TILE;
-const WORLD_H = MAP_H * TILE;
+// Each zone is its own 50×50 coordinate space. Zones connect via walk-through
+// edges (server zone graph): walking off the west edge of 마을 lands you on
+// the east edge of 벌목장. The client mirrors the server's ZONE_DEFS to drive
+// camera bounds, edge detection, and per-zone sprite visibility.
+const ZONE_TILES = 50;
+const ZONE_W = ZONE_TILES * TILE; // 1600
+const ZONE_H = ZONE_TILES * TILE; // 1600
 const PLAYER_SPEED = 140;
 const RUN_SPEED = 230;
 
-// Map zones (3-way horizontal split). Farm = west, village = center, logging = east.
-const ZONE_FARM_X_MAX = Math.floor(MAP_W / 3);          // 0..16 = farm
-const ZONE_VILLAGE_X_MAX = Math.floor((MAP_W * 2) / 3); // 17..33 = village
-// 34..49 = logging
+interface ZoneClientDef {
+  id: string;
+  name: string;
+  edges: Partial<Record<"west" | "east" | "north" | "south", { to: string; entry: "west" | "east" | "north" | "south" }>>;
+}
+const ZONE_DEFS: Record<string, ZoneClientDef> = {
+  village: {
+    id: "village", name: "마을",
+    edges: {
+      west: { to: "logging", entry: "east" },
+      east: { to: "mine", entry: "west" },
+    },
+  },
+  logging: {
+    id: "logging", name: "벌목장",
+    edges: { east: { to: "village", entry: "west" } },
+  },
+  mine: {
+    id: "mine", name: "광산",
+    edges: { west: { to: "village", entry: "east" } },
+  },
+};
 const INV_SQRT2 = 1 / Math.SQRT2;
 
 const SEND_INTERVAL_MS = 80;
@@ -82,13 +99,7 @@ const ORE_NODES: Array<{ type: ResourceType; textureKey: string; count: number }
   { type: "gold_node", textureKey: "node_gold", count: 3 },
 ];
 
-// Zone transition is by walking across the village's west/east border:
-// camera flashes when the player's current zone changes (no portal sprite).
-const ZONE_LABEL: Record<string, string> = {
-  village: "마을",
-  logging: "벌목장",
-  mine: "광산",
-};
+// Zone display names come from ZONE_DEFS[zoneId].name — no separate label map needed.
 
 // Village buildings (top-down 3/4 perspective). Each is placed once.
 interface BuildingSpec {
@@ -108,15 +119,17 @@ const INTERIOR_H = 320;
 // Interiors live south of the playable world. Camera + physics bounds are
 // extended to include this band so player.setPosition there works smoothly.
 const INTERIOR_BASE_Y_OFFSET = 200;
-// Interior rooms live south of the playable world (Y > WORLD_H). Camera + physics
+// Interior rooms live south of the village zone (Y > ZONE_H). Camera + physics
 // bounds are extended to cover this off-map band so teleport works smoothly.
-const INTERIOR_Y_BASE = MAP_H * TILE + INTERIOR_BASE_Y_OFFSET; // 1800
+const INTERIOR_Y_BASE = ZONE_H + INTERIOR_BASE_Y_OFFSET; // 1800
+// Buildings cluster around the village zone's central road.
+const VILLAGE_CENTER_TX = Math.floor(ZONE_TILES / 2); // 25
 const BUILDINGS: BuildingSpec[] = [
-  { key: "bldg_town_hall", tx: 75, ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨",
+  { key: "bldg_town_hall", tx: VILLAGE_CENTER_TX,     ty: 14, npcKey: "npc_chief_lee",       npcName: "이장 이씨",
     interiorX:  600, interiorY: INTERIOR_Y_BASE },
-  { key: "bldg_store",     tx: 70, ty: 32, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨",
+  { key: "bldg_store",     tx: VILLAGE_CENTER_TX - 5, ty: 32, npcKey: "npc_mrs_lee",         npcName: "잡화점 이씨",
     interiorX: 1500, interiorY: INTERIOR_Y_BASE },
-  { key: "bldg_blacksmith",tx: 79, ty: 32, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨",
+  { key: "bldg_blacksmith",tx: VILLAGE_CENTER_TX + 4, ty: 32, npcKey: "npc_blacksmith_roh",  npcName: "대장장이 노씨",
     interiorX: 2500, interiorY: INTERIOR_Y_BASE },
 ];
 
@@ -199,6 +212,7 @@ export class MainScene extends Phaser.Scene {
     ty: number;
     state: "empty" | "planted" | "grown";
     plantedAt: number;
+    zoneId: string;
   }>();
   private farmLocalGrowthTimers = new Map<string, number>();
   private farmGraphics?: Phaser.GameObjects.Graphics;
@@ -222,25 +236,15 @@ export class MainScene extends Phaser.Scene {
   private swinging = false;
   private dashing = false;
   private lastDashAt = 0;
-  private lastZone: "village" | "logging" | "mine" = "village";
+  private currentZoneId: string = "village";
+  private zoneTransitionLockUntil = 0;
+  // One Phaser layer per zone — toggling visibility swaps the whole
+  // ground/decor/village stack on zone change without rebuilding sprites.
+  private zoneLayers = new Map<string, Phaser.GameObjects.Layer>();
   private interactionHintGfx?: Phaser.GameObjects.Graphics;
   private interactionHintText?: Phaser.GameObjects.Text;
   private minimapZones: MinimapZone[] = [
-    { x: 0, y: 0, w: ZONE_FARM_X_MAX * TILE, h: WORLD_H, color: "#c2b07d" },
-    {
-      x: ZONE_FARM_X_MAX * TILE,
-      y: 0,
-      w: (ZONE_VILLAGE_X_MAX - ZONE_FARM_X_MAX) * TILE,
-      h: WORLD_H,
-      color: "#a89c8a",
-    },
-    {
-      x: ZONE_VILLAGE_X_MAX * TILE,
-      y: 0,
-      w: WORLD_W - ZONE_VILLAGE_X_MAX * TILE,
-      h: WORLD_H,
-      color: "#4d7a3a",
-    },
+    { x: 0, y: 0, w: ZONE_W, h: ZONE_H, color: "#a89c8a" },
   ];
 
   constructor() {
@@ -345,8 +349,8 @@ export class MainScene extends Phaser.Scene {
       .setDepth(99999)
       .setVisible(false);
 
-    const spawnX = WORLD_W / 2;
-    const spawnY = WORLD_H / 2;
+    const spawnX = ZONE_W / 2;
+    const spawnY = ZONE_H / 2;
     this.player = this.physics.add.sprite(spawnX, spawnY, "player_idle", 0);
     this.player.setOrigin(0.5, 0.85);
     this.player.setCollideWorldBounds(true);
@@ -366,12 +370,13 @@ export class MainScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setDepth(100000);
 
-    // Extended bounds cover the off-map interior strip south of WORLD_H so
+    // Extended bounds cover the off-map interior strip south of ZONE_H so
     // teleport into building interiors is smooth and the player isn't snapped
-    // back by collideWorldBounds.
+    // back by collideWorldBounds. Same bounds work for every zone since each
+    // zone shares the 50×50 coord space.
     const extendedH = INTERIOR_Y_BASE + INTERIOR_H + 200;
-    this.cameras.main.setBounds(0, 0, WORLD_W, extendedH);
-    this.physics.world.setBounds(0, 0, WORLD_W, extendedH);
+    this.cameras.main.setBounds(0, 0, ZONE_W, extendedH);
+    this.physics.world.setBounds(0, 0, ZONE_W, extendedH);
     this.cameras.main.startFollow(this.player, true, 1, 1);
     this.cameras.main.setZoom(2);
     this.cameras.main.setRoundPixels(true);
@@ -488,6 +493,7 @@ export class MainScene extends Phaser.Scene {
     this.applyPlayerAnimation(this.player, this.dir, moving, running);
     this.tryBuildingEnter();
     this.checkZoneTransition();
+    this.maybeRequestZoneMove(time);
     this.updateFarm();
     this.updateInteractionHint(time);
 
@@ -523,7 +529,7 @@ export class MainScene extends Phaser.Scene {
       }
     }
 
-    if (this.player.y <= WORLD_H) {
+    if (this.player.y <= ZONE_H && this.currentZoneId === "village") {
       for (const b of BUILDINGS) {
         const bx = b.tx * TILE + TILE / 2;
         const by = b.ty * TILE + TILE / 2;
@@ -595,15 +601,15 @@ export class MainScene extends Phaser.Scene {
     const gm = (this.net?.room?.state as { gameMinutes?: number } | undefined)?.gameMinutes;
     if (typeof gm === "number") hud.setTime(gm);
     hud.minimap.update({
-      worldW: WORLD_W,
-      worldH: WORLD_H,
+      worldW: ZONE_W,
+      worldH: ZONE_H,
       playerX: this.player.x,
       playerY: this.player.y,
       zones: this.minimapZones,
-      buildings: BUILDINGS.map((b) => ({
+      buildings: this.currentZoneId === "village" ? BUILDINGS.map((b) => ({
         x: b.tx * TILE + TILE / 2,
         y: b.ty * TILE + TILE / 2,
-      })),
+      })) : [],
       forEachResource: (cb) => {
         for (const obj of this.harvestables.getChildren()) {
           const sprite = obj as Phaser.GameObjects.Sprite;
@@ -989,75 +995,86 @@ export class MainScene extends Phaser.Scene {
     return key;
   }
 
+  // Build one ground tilemap per zone — all 50×50, all in the same coord space.
+  // Zone layers toggle visibility so only the active zone renders.
   private buildGroundLayer() {
-    const rng = new Phaser.Math.RandomDataGenerator(["aurora-ground"]);
-    const data: number[][] = [];
-    for (let y = 0; y < MAP_H; y++) {
-      const row: number[] = [];
-      for (let x = 0; x < MAP_W; x++) {
-        const r = rng.frac();
-        row.push(r < 0.85 ? GRASS_BASE : r < 0.93 ? GRASS_TUFT : GRASS_FLOWER);
+    for (const zoneId of Object.keys(ZONE_DEFS)) {
+      const rng = new Phaser.Math.RandomDataGenerator([`aurora-ground-${zoneId}`]);
+      const data: number[][] = [];
+      for (let y = 0; y < ZONE_TILES; y++) {
+        const row: number[] = [];
+        for (let x = 0; x < ZONE_TILES; x++) {
+          const r = rng.frac();
+          row.push(r < 0.85 ? GRASS_BASE : r < 0.93 ? GRASS_TUFT : GRASS_FLOWER);
+        }
+        data.push(row);
       }
-      data.push(row);
-    }
-    const map = this.make.tilemap({ data, tileWidth: TILE, tileHeight: TILE });
-    const tileset = map.addTilesetImage("tinytown", "tinytown", TILE, TILE, 0, 0);
-    if (tileset) {
-      const layer = map.createLayer(0, tileset, 0, 0);
-      layer?.setDepth(-1000);
+      const map = this.make.tilemap({ data, tileWidth: TILE, tileHeight: TILE });
+      const tileset = map.addTilesetImage("tinytown", "tinytown", TILE, TILE, 0, 0);
+      if (tileset) {
+        const layer = map.createLayer(0, tileset, 0, 0);
+        if (layer) {
+          layer.setDepth(-1000);
+          this.zoneLayerFor(zoneId).add(layer);
+        }
+      }
     }
   }
 
   private buildDecorations() {
-    const rng = new Phaser.Math.RandomDataGenerator(["aurora-decor"]);
-    const center = { x: MAP_W / 2, y: MAP_H / 2 };
+    const center = { x: ZONE_TILES / 2, y: ZONE_TILES / 2 };
     // Logging-friendly deco (bushes, flowers, mushrooms, stumps).
     const LOGGING_DECO = [9, 10, 13, 14, 15];
     // Mine-friendly deco (small rocks, stumps).
     const MINE_DECO = [12, 14];
-    // Total deco budget per zone — denser than before so the world reads
-    // distinctly as forest vs mine vs village.
+    // Total deco budget per zone — denser than before so each zone reads distinctly.
     const LOGGING_COUNT = 110;
     const MINE_COUNT = 70;
 
-    const tryPlace = (zoneCheck: (tx: number, ty: number) => boolean, frames: number[], n: number) => {
+    const placeIn = (zoneId: string, frames: number[], n: number) => {
+      const rng = new Phaser.Math.RandomDataGenerator([`aurora-decor-${zoneId}`]);
+      const layer = this.zoneLayerFor(zoneId);
       let placed = 0;
       let attempts = 0;
       while (placed < n && attempts < n * 4) {
         attempts++;
-        const tx = rng.between(1, MAP_W - 2);
-        const ty = rng.between(1, MAP_H - 2);
-        if (!zoneCheck(tx, ty)) continue;
+        const tx = rng.between(1, ZONE_TILES - 2);
+        const ty = rng.between(1, ZONE_TILES - 2);
         if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
         const idx = frames[rng.between(0, frames.length - 1)];
         const sprite = this.add.sprite(tx * TILE + TILE / 2, ty * TILE + TILE / 2, "props", idx);
         sprite.setOrigin(0.5, 0.9);
         sprite.setDepth(ty * TILE - 1);
+        layer.add(sprite);
         placed++;
       }
     };
 
-    tryPlace((tx) => tx <= ZONE_FARM_X_MAX, LOGGING_DECO, LOGGING_COUNT);
-    tryPlace((tx) => tx > ZONE_VILLAGE_X_MAX, MINE_DECO, MINE_COUNT);
+    placeIn("logging", LOGGING_DECO, LOGGING_COUNT);
+    placeIn("mine", MINE_DECO, MINE_COUNT);
   }
 
-  private isInVillage(tx: number, _ty: number): boolean {
-    // Village is the central X band; full vertical span (ty unused).
-    return tx > ZONE_FARM_X_MAX && tx <= ZONE_VILLAGE_X_MAX;
+  private zoneLayerFor(zoneId: string): Phaser.GameObjects.Layer {
+    let layer = this.zoneLayers.get(zoneId);
+    if (!layer) {
+      layer = this.add.layer();
+      layer.setVisible(zoneId === this.currentZoneId);
+      this.zoneLayers.set(zoneId, layer);
+    }
+    return layer;
   }
 
   // Offline fallback when the server isn't reachable. Server is the master in
-  // online mode; this only runs when net.connect() fails.
+  // online mode; this only runs when net.connect() fails. Seeds trees in the
+  // logging zone and rocks/ores in the mine zone — same shape as server seed.
   private seedOfflineHarvestables() {
     const group = this.harvestables;
     const rng = new Phaser.Math.RandomDataGenerator(["aurora-trees"]);
-    const center = { x: MAP_W / 2, y: MAP_H / 2 };
 
+    const loggingLayer = this.zoneLayerFor("logging");
     for (let i = 0; i < 80; i++) {
-      const tx = rng.between(1, MAP_W - 2);
-      const ty = rng.between(1, MAP_H - 2);
-      if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
-      if (this.isInVillage(tx, ty)) continue;
+      const tx = rng.between(1, ZONE_TILES - 2);
+      const ty = rng.between(1, ZONE_TILES - 2);
       const idx = TREE_FRAMES[rng.between(0, TREE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
@@ -1065,43 +1082,45 @@ export class MainScene extends Phaser.Scene {
       tree.setOrigin(0.5, 0.9);
       tree.setScale(1.75);
       tree.setDepth(wy);
+      tree.setData("zoneId", "logging");
       this.markHarvestable(tree, "tree");
+      loggingLayer.add(tree);
       group.add(tree);
     }
 
     // Boulders are rock-harvestable; stumps remain props (already harvested).
+    const mineLayer = this.zoneLayerFor("mine");
     for (let i = 0; i < 25; i++) {
-      const tx = rng.between(1, MAP_W - 2);
-      const ty = rng.between(1, MAP_H - 2);
-      if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
-      if (this.isInVillage(tx, ty)) continue;
+      const tx = rng.between(1, ZONE_TILES - 2);
+      const ty = rng.between(1, ZONE_TILES - 2);
       const idx = OBSTACLE_FRAMES[rng.between(0, OBSTACLE_FRAMES.length - 1)];
       const wx = tx * TILE + TILE / 2;
       const wy = ty * TILE + TILE / 2;
       const sprite = this.add.sprite(wx, wy, "props", idx);
       sprite.setOrigin(0.5, 0.9);
       sprite.setDepth(wy);
+      sprite.setData("zoneId", "mine");
+      mineLayer.add(sprite);
       if (idx === 11) {
         this.markHarvestable(sprite, "rock");
         group.add(sprite);
       }
-      // stumps stay as scenery
     }
 
     // Ore nodes (copper / silver / gold) — only if textures loaded successfully.
     for (const ore of ORE_NODES) {
       if (!this.textures.exists(ore.textureKey)) continue;
       for (let i = 0; i < ore.count; i++) {
-        const tx = rng.between(1, MAP_W - 2);
-        const ty = rng.between(1, MAP_H - 2);
-        if (Math.abs(tx - center.x) < SPAWN_CLEAR_RADIUS && Math.abs(ty - center.y) < SPAWN_CLEAR_RADIUS) continue;
-        if (this.isInVillage(tx, ty)) continue;
+        const tx = rng.between(1, ZONE_TILES - 2);
+        const ty = rng.between(1, ZONE_TILES - 2);
         const wx = tx * TILE + TILE / 2;
         const wy = ty * TILE + TILE / 2;
         const sprite = this.add.sprite(wx, wy, ore.textureKey);
         sprite.setOrigin(0.5, 0.9);
         sprite.setDepth(wy);
+        sprite.setData("zoneId", "mine");
         this.markHarvestable(sprite, ore.type);
+        mineLayer.add(sprite);
         group.add(sprite);
       }
     }
@@ -1132,9 +1151,15 @@ export class MainScene extends Phaser.Scene {
     sprite.setData("resourceType", h.rtype);
     sprite.setData("harvestableId", id);
     sprite.setData("baseScaleY", sprite.scaleY);
-    sprite.setVisible(h.alive === 1);
-    sprite.setActive(h.alive === 1);
+    sprite.setData("zoneId", h.zoneId);
+    sprite.setData("aliveFlag", h.alive === 1);
+    const visible = h.alive === 1 && h.zoneId === this.currentZoneId;
+    sprite.setVisible(visible);
+    sprite.setActive(visible);
     this.harvestables.add(sprite);
+    if (h.zoneId && this.zoneLayers.has(h.zoneId)) {
+      this.zoneLayerFor(h.zoneId).add(sprite);
+    }
     this.harvestablesById.set(id, sprite);
     this.serverHpCache.set(id, h.hp);
   }
@@ -1147,8 +1172,10 @@ export class MainScene extends Phaser.Scene {
 
     if (h.hp < prevHp) this.flashHarvestable(sprite);
 
-    const wasAlive = sprite.visible;
+    const wasAlive = (sprite.getData("aliveFlag") as boolean) ?? sprite.visible;
     const isAlive = h.alive === 1;
+    sprite.setData("aliveFlag", isAlive);
+    const inZone = ((sprite.getData("zoneId") as string) ?? "") === this.currentZoneId;
     if (wasAlive && !isAlive) {
       const baseScaleY = (sprite.getData("baseScaleY") as number) ?? sprite.scaleY;
       this.tweens.add({
@@ -1163,7 +1190,7 @@ export class MainScene extends Phaser.Scene {
         },
       });
     } else if (!wasAlive && isAlive) {
-      sprite.setVisible(true).setActive(true);
+      sprite.setVisible(inZone).setActive(inZone);
     }
   }
 
@@ -1245,39 +1272,40 @@ export class MainScene extends Phaser.Scene {
   }
 
   private buildVillage() {
-    // Layout reconstructs the partner-supplied reference image
-    // (assets/maps/village.png) in-engine using individual sprites:
-    //   - cobblestone road runs N→S through the village
-    //   - castle gatehouse at the north end
-    //   - 3 buildings (town hall, store, blacksmith) flank the plaza
+    // Village layout, drawn in the village zone's local 50×50 coord space:
+    //   - cobblestone road runs N→S through the village center
+    //   - castle gatehouse at the north anchor
+    //   - 3 buildings flank the plaza (town hall north, store/blacksmith south)
     //   - fountain + 3 market stalls form the central plaza
-    //   - dense tree belt lines the village along both edges
+    //   - dense tree belts line the east/west edges (clear walkable corridor)
 
-    // 1. Cobblestone road (north-south through the village center).
-    const villageCenterTileX = Math.floor((ZONE_FARM_X_MAX + ZONE_VILLAGE_X_MAX + 1) / 2);
-    const roadCx = villageCenterTileX * TILE + TILE / 2;
+    const villageLayer = this.zoneLayerFor("village");
+    const roadCx = VILLAGE_CENTER_TX * TILE + TILE / 2;
     const roadHalfW = TILE * 2; // 4-tile wide road
+
+    // 1. Cobblestone road.
     const road = this.add.graphics();
     road.fillStyle(0x8a857a, 1);
-    road.fillRect(roadCx - roadHalfW, 0, roadHalfW * 2, WORLD_H);
+    road.fillRect(roadCx - roadHalfW, 0, roadHalfW * 2, ZONE_H);
     road.lineStyle(2, 0x5e5a52, 1);
-    road.lineBetween(roadCx - roadHalfW, 0, roadCx - roadHalfW, WORLD_H);
-    road.lineBetween(roadCx + roadHalfW, 0, roadCx + roadHalfW, WORLD_H);
-    // Faint cobble dots every 2 tiles for texture.
+    road.lineBetween(roadCx - roadHalfW, 0, roadCx - roadHalfW, ZONE_H);
+    road.lineBetween(roadCx + roadHalfW, 0, roadCx + roadHalfW, ZONE_H);
     road.fillStyle(0x6e6a60, 0.6);
-    for (let y = 16; y < WORLD_H; y += TILE) {
+    for (let y = 16; y < ZONE_H; y += TILE) {
       for (let x = roadCx - roadHalfW + 6; x < roadCx + roadHalfW; x += 16) {
         road.fillRect(x, y, 2, 2);
       }
     }
     road.setDepth(-800);
+    villageLayer.add(road);
 
-    // 2. Castle gatehouse — north anchor of the village.
+    // 2. Castle gatehouse — north anchor.
     const castleTileY = 5;
     if (this.textures.exists("castle")) {
       const castle = this.add.sprite(roadCx, castleTileY * TILE, "castle");
       castle.setOrigin(0.5, 0.5);
       castle.setDepth(castleTileY * TILE);
+      villageLayer.add(castle);
     }
 
     // 3. Central plaza fountain.
@@ -1287,13 +1315,14 @@ export class MainScene extends Phaser.Scene {
       fountain.setOrigin(0.5, 0.9);
       fountain.setScale(2);
       fountain.setDepth(fountainTileY * TILE);
+      villageLayer.add(fountain);
     }
 
     // 4. Three market stalls around the fountain.
     const stalls: Array<{ tx: number; ty: number; key: string }> = [
-      { tx: villageCenterTileX - 3, ty: fountainTileY + 1, key: "stall_yellow" },
-      { tx: villageCenterTileX + 3, ty: fountainTileY + 1, key: "stall_red" },
-      { tx: villageCenterTileX,     ty: fountainTileY - 3, key: "stall_green" },
+      { tx: VILLAGE_CENTER_TX - 3, ty: fountainTileY + 1, key: "stall_yellow" },
+      { tx: VILLAGE_CENTER_TX + 3, ty: fountainTileY + 1, key: "stall_red" },
+      { tx: VILLAGE_CENTER_TX,     ty: fountainTileY - 3, key: "stall_green" },
     ];
     for (const s of stalls) {
       if (!this.textures.exists(s.key)) continue;
@@ -1303,26 +1332,25 @@ export class MainScene extends Phaser.Scene {
       stall.setOrigin(0.5, 0.9);
       stall.setScale(1.5);
       stall.setDepth(wy);
+      villageLayer.add(stall);
     }
 
-    // 5. Dense tree belts along the inner edges of the village zone.
-    // Skip the small-oak (0) and birch (7) frames — they render weird thin
-    // trunks at this scale that look like broken vertical bars.
-    const beltTileLeft = ZONE_FARM_X_MAX + 1;     // first tile inside village
-    const beltTileRight = ZONE_VILLAGE_X_MAX;     // last tile inside village
+    // 5. Tree belts hugging the east/west zone edges (clear walking corridor
+    // at the very edge so walk-through transition is reachable).
     const beltVariants = [1, 2, 3, 4, 5, 6];
-    for (let ty = 4; ty < MAP_H - 1; ty += 2) {
-      for (const tx of [beltTileLeft, beltTileLeft + 1, beltTileRight - 1, beltTileRight]) {
+    for (let ty = 4; ty < ZONE_TILES - 1; ty += 2) {
+      for (const tx of [3, 4, ZONE_TILES - 5, ZONE_TILES - 4]) {
         if (ty >= fountainTileY - 4 && ty <= fountainTileY + 4) continue;
         const variant = beltVariants[(tx + ty) % beltVariants.length];
         const tree = this.add.sprite(tx * TILE + TILE / 2, ty * TILE + TILE / 2, "props", variant);
         tree.setOrigin(0.5, 0.9);
         tree.setScale(1.75);
         tree.setDepth(ty * TILE);
+        villageLayer.add(tree);
       }
     }
 
-    // 6. Buildings (3 around the road). NPCs live in interiors now, not outside.
+    // 6. Buildings around the road. NPCs live in interiors, not outside.
     for (const b of BUILDINGS) {
       const wx = b.tx * TILE + TILE / 2;
       const wy = b.ty * TILE + TILE / 2;
@@ -1331,6 +1359,7 @@ export class MainScene extends Phaser.Scene {
         bldg.setOrigin(0.5, 0.9);
         bldg.setScale(0.75);
         bldg.setDepth(wy);
+        villageLayer.add(bldg);
       }
     }
 
@@ -1415,31 +1444,91 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  private currentZone(): "village" | "logging" | "mine" {
-    const tx = Math.floor(this.player.x / TILE);
-    if (tx <= ZONE_FARM_X_MAX) return "logging";
-    if (tx > ZONE_VILLAGE_X_MAX) return "mine";
-    return "village";
+  // Server-driven zone id (read off our own Player schema). If we're not yet
+  // connected, fall back to the local tracker.
+  private serverZoneId(): string {
+    if (!this.net?.connected || !this.net.sessionId) return this.currentZoneId;
+    const players = this.net.room?.state?.players as unknown as {
+      get?: (k: string) => { zoneId?: string } | undefined;
+    } | undefined;
+    const me = players?.get?.(this.net.sessionId);
+    return me?.zoneId || this.currentZoneId;
   }
 
-  // Camera flashes + a big center banner when the player crosses a zone
-  // border. No teleport — the world is contiguous; the banner just sells the
-  // "new map" feel partner asked for. Interiors live south of WORLD_H — skip
-  // the zone banner there since interior entry has its own banner.
+  // Detect server-side zone changes (we sent a zone_move and the server moved
+  // us across the edge). Swap visible layers + run the banner.
   private checkZoneTransition() {
-    if (this.player.y > WORLD_H) return;
-    const zone = this.currentZone();
-    if (zone === this.lastZone) return;
-    this.lastZone = zone;
+    if (this.player.y > ZONE_H) return;
+    const zoneId = this.serverZoneId();
+    if (zoneId === this.currentZoneId) return;
+    this.applyZoneChange(zoneId);
+  }
+
+  private applyZoneChange(zoneId: string) {
+    if (!ZONE_DEFS[zoneId]) return;
+    const prev = this.currentZoneId;
+    this.currentZoneId = zoneId;
+    for (const [id, layer] of this.zoneLayers) {
+      layer.setVisible(id === zoneId);
+    }
+    // Snap to server-authoritative position so we land at the entry edge.
+    const players = this.net?.room?.state?.players as unknown as {
+      get?: (k: string) => { x?: number; y?: number } | undefined;
+    } | undefined;
+    const me = this.net?.sessionId ? players?.get?.(this.net.sessionId) : undefined;
+    if (me && typeof me.x === "number" && typeof me.y === "number") {
+      this.player.setPosition(me.x, me.y);
+      this.nameTag.setPosition(me.x, me.y - 5);
+    }
     this.cameras.main.flash(260, 0, 0, 0);
     const hud = this.registry.get("hud") as Hud | undefined;
-    hud?.showZoneLoading(ZONE_LABEL[zone]);
+    hud?.showZoneLoading(ZONE_DEFS[zoneId].name);
+    this.refilterHarvestablesByZone();
+    this.redrawFarm();
+    if (prev !== zoneId) {
+      // Tiny lockout so we don't immediately bounce back across the edge.
+      this.zoneTransitionLockUntil = this.time.now + 600;
+    }
+  }
+
+  // Player walked into an edge tile of the current zone — ask the server to
+  // move us. Server validates the edge and snaps us to the destination zone's
+  // entry side; we react via applyZoneChange when the schema updates.
+  private maybeRequestZoneMove(now: number) {
+    if (!this.net?.connected) return;
+    if (now < this.zoneTransitionLockUntil) return;
+    if (this.player.y > ZONE_H) return; // inside an interior — skip
+    const zone = ZONE_DEFS[this.currentZoneId];
+    if (!zone) return;
+    const EDGE = 6;
+    let side: "west" | "east" | "north" | "south" | null = null;
+    if (this.player.x <= EDGE && zone.edges.west) side = "west";
+    else if (this.player.x >= ZONE_W - EDGE && zone.edges.east) side = "east";
+    else if (this.player.y <= EDGE && zone.edges.north) side = "north";
+    else if (this.player.y >= ZONE_H - EDGE && zone.edges.south) side = "south";
+    if (!side) return;
+    this.zoneTransitionLockUntil = now + 1500;
+    this.net.sendZoneMove(side);
+  }
+
+  // Show/hide each server harvestable based on whether it sits in the active zone.
+  private refilterHarvestablesByZone() {
+    for (const [id, sprite] of this.harvestablesById) {
+      const zid = (sprite.getData("zoneId") as string) ?? "";
+      const inZone = zid === this.currentZoneId;
+      const hp = this.serverHpCache.get(id) ?? 0;
+      const alive = hp > 0 || hp === 0; // visibility driven by aliveCache flag below
+      const stillAlive = sprite.getData("aliveFlag") !== false;
+      const visible = inZone && stillAlive;
+      sprite.setVisible(visible).setActive(visible);
+      void alive;
+    }
   }
 
   // Offline fallback only — server seeds the same 6x5 grid when online.
   private buildFarmOffline() {
-    const baseTx = 82;
-    const baseTy = 36;
+    const baseTx = 22; // village-local coords match server FARM_BASE_TX
+    const baseTy = 30;
     let counter = 0;
     for (let dy = 0; dy < 5; dy++) {
       for (let dx = 0; dx < 6; dx++) {
@@ -1454,6 +1543,7 @@ export class MainScene extends Phaser.Scene {
           ty,
           state: "empty",
           plantedAt: 0,
+          zoneId: "village",
         });
       }
     }
@@ -1470,6 +1560,7 @@ export class MainScene extends Phaser.Scene {
     if (!this.farmGraphics) return;
     this.farmGraphics.clear();
     for (const p of this.farmPatches.values()) {
+      if (p.zoneId !== this.currentZoneId) continue;
       const wx = p.x - TILE / 2;
       const wy = p.y - TILE / 2;
       this.farmGraphics.fillStyle(0x6b4a2a, 1);
@@ -1554,7 +1645,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   // Server farm patch sync.
-  private addServerFarmPatch(id: string, fp: { x: number; y: number; state: string; plantedAt: number }) {
+  private addServerFarmPatch(id: string, fp: { x: number; y: number; state: string; plantedAt: number; zoneId?: string }) {
     this.farmPatches.set(id, {
       id,
       x: fp.x,
@@ -1563,6 +1654,7 @@ export class MainScene extends Phaser.Scene {
       ty: Math.floor(fp.y / TILE),
       state: (fp.state as "empty" | "planted" | "grown"),
       plantedAt: fp.plantedAt,
+      zoneId: fp.zoneId ?? "village",
     });
     this.redrawFarm();
   }
@@ -1687,8 +1779,8 @@ export class MainScene extends Phaser.Scene {
     const dx = DX[this.dir] ?? 0;
     const dy = DY[this.dir] ?? 0;
     const DASH_DIST = 110;
-    const targetX = Phaser.Math.Clamp(this.player.x + dx * DASH_DIST, 0, WORLD_W);
-    const targetY = Phaser.Math.Clamp(this.player.y + dy * DASH_DIST, 0, WORLD_H);
+    const targetX = Phaser.Math.Clamp(this.player.x + dx * DASH_DIST, 0, ZONE_W);
+    const targetY = Phaser.Math.Clamp(this.player.y + dy * DASH_DIST, 0, ZONE_H);
 
     this.dashing = true;
     this.cameras.main.shake(110, 0.004);
@@ -1752,12 +1844,10 @@ export class MainScene extends Phaser.Scene {
     if (this.net?.connected) {
       this.net.sendMove(x, y, this.dir, false);
     }
-    // Sync the zone tracker only when landing in the outside world. Interior
-    // teleports run their own banner so we don't trigger a duplicate one on
-    // the very next frame.
-    if (y <= WORLD_H) {
-      this.lastZone = this.currentZone();
-    }
+    // Interior teleports go south of ZONE_H; outside teleports stay in-zone.
+    // No tracker sync needed — server zoneId stays "village" through interior
+    // teleports (interiors are still inside the village zone's bounds box).
+    void y;
   }
 
   private tryHarvest() {

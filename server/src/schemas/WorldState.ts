@@ -6,6 +6,8 @@ export class Player extends Schema {
   @type("number") y = 0;
   @type("number") dir = 0;
   @type("number") moving = 0;
+  // Current zone ID — players only see/interact with entities in this zone.
+  @type("string") zoneId = "village";
   // itemId -> count
   @type({ map: "number" }) inventory = new MapSchema<number>();
   // 8 hotbar slots; empty string = empty slot
@@ -16,6 +18,7 @@ export class Player extends Schema {
 }
 
 export class FarmPatch extends Schema {
+  @type("string") zoneId = "village";
   @type("number") x = 0;
   @type("number") y = 0;
   // empty | planted | grown
@@ -26,6 +29,8 @@ export class FarmPatch extends Schema {
 }
 
 export class Harvestable extends Schema {
+  // Zone this harvestable belongs to (logging | mine | etc.).
+  @type("string") zoneId = "";
   // Resource type: tree | rock | copper_node | silver_node | gold_node
   @type("string") rtype = "";
   @type("number") x = 0;

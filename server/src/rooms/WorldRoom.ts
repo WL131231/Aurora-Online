@@ -2,17 +2,43 @@ import { Client, Room } from "colyseus";
 import { FarmPatch, Harvestable, Player, WorldState } from "../schemas/WorldState.js";
 
 const TILE = 32;
-// World is one continuous 150-tile-wide strip split into 3 zones:
-// logging (X 0..49) | village (X 50..99) | mine (X 100..149).
-const MAP_W = 150;
-const MAP_H = 50;
-const WORLD_W = MAP_W * TILE;
-const WORLD_H = MAP_H * TILE;
-const SPAWN_CLEAR_RADIUS = 5;
 
-// Zones (mirror client: farm/village/logging horizontal split).
-const ZONE_FARM_X_MAX = Math.floor(MAP_W / 3);
-const ZONE_VILLAGE_X_MAX = Math.floor((MAP_W * 2) / 3);
+// Zone graph — each zone is its own 50×50 coordinate space.
+// Walking off an edge sends you to the matching edge of the connected zone.
+interface ZoneDef {
+  id: string;
+  name: string;
+  widthTiles: number;
+  heightTiles: number;
+  edges: Partial<Record<"west" | "east" | "north" | "south", { to: string; entry: "west" | "east" | "north" | "south" }>>;
+}
+const ZONE_DEFS: Record<string, ZoneDef> = {
+  village: {
+    id: "village", name: "마을", widthTiles: 50, heightTiles: 50,
+    edges: {
+      west: { to: "logging", entry: "east" },
+      east: { to: "mine", entry: "west" },
+    },
+  },
+  logging: {
+    id: "logging", name: "벌목장", widthTiles: 50, heightTiles: 50,
+    edges: { east: { to: "village", entry: "west" } },
+  },
+  mine: {
+    id: "mine", name: "광산", widthTiles: 50, heightTiles: 50,
+    edges: { west: { to: "village", entry: "east" } },
+  },
+};
+function entryPosition(zone: ZoneDef, side: "west" | "east" | "north" | "south"): { x: number; y: number } {
+  const midX = (zone.widthTiles * TILE) / 2;
+  const midY = (zone.heightTiles * TILE) / 2;
+  switch (side) {
+    case "west": return { x: 2 * TILE, y: midY };
+    case "east": return { x: (zone.widthTiles - 2) * TILE, y: midY };
+    case "north": return { x: midX, y: 2 * TILE };
+    case "south": return { x: midX, y: (zone.heightTiles - 2) * TILE };
+  }
+}
 
 // Harvest config — mirrors client/src/game/items.ts.
 const RESOURCE_BASE_HP: Record<string, number> = {
@@ -49,8 +75,10 @@ const DROP_FOR_RESOURCE: Record<string, string> = {
 const HARVEST_RANGE_SQ = 80 * 80;
 const FARM_REACH_SQ = 80 * 80;
 const FARM_GROW_MS = 30_000;
-const FARM_BASE_TX = 82;
-const FARM_BASE_TY = 36;
+// Farm patches sit inside the village zone (own 50-tile coord space).
+const FARM_ZONE = "village";
+const FARM_BASE_TX = 22;
+const FARM_BASE_TY = 30;
 const FARM_COLS = 6;
 const FARM_ROWS = 5;
 
@@ -64,6 +92,7 @@ type HarvestMessage = { id: string; toolId: string };
 type HotbarSelectMessage = { index: number };
 type FarmActionMessage = { id: string };
 type NpcGiftMessage = { npcName: string; itemId: string };
+type ZoneMoveMessage = { side: string };
 
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001F\\u007F]", "g");
 const MAX_NAME = 16;
@@ -85,14 +114,35 @@ export class WorldRoom extends Room<WorldState> {
       const p = this.state.players.get(client.sessionId);
       if (!p) return;
       if (typeof msg.x !== "number" || typeof msg.y !== "number") return;
-      p.x = clamp(msg.x, 0, WORLD_W);
-      p.y = clamp(msg.y, 0, WORLD_H);
+      const zone = ZONE_DEFS[p.zoneId] ?? ZONE_DEFS.village;
+      const maxX = zone.widthTiles * TILE;
+      const maxY = zone.heightTiles * TILE;
+      p.x = clamp(msg.x, 0, maxX);
+      p.y = clamp(msg.y, 0, maxY);
       if (typeof msg.dir === "number" && msg.dir >= 0 && msg.dir < 8) {
         p.dir = msg.dir | 0;
       }
       if (typeof msg.moving === "number") {
         p.moving = msg.moving ? 1 : 0;
       }
+    });
+
+    this.onMessage("zone_move", (client, msg: ZoneMoveMessage) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p) return;
+      const side = msg?.side;
+      if (side !== "west" && side !== "east" && side !== "north" && side !== "south") return;
+      const zone = ZONE_DEFS[p.zoneId];
+      if (!zone) return;
+      const edge = zone.edges[side];
+      if (!edge) return;
+      const dest = ZONE_DEFS[edge.to];
+      if (!dest) return;
+      const pos = entryPosition(dest, edge.entry);
+      p.zoneId = edge.to;
+      p.x = pos.x;
+      p.y = pos.y;
+      p.moving = 0;
     });
 
     this.onMessage("chat", (client, msg: ChatMessage) => {
@@ -147,6 +197,7 @@ export class WorldRoom extends Room<WorldState> {
     for (let dy = 0; dy < FARM_ROWS; dy++) {
       for (let dx = 0; dx < FARM_COLS; dx++) {
         const f = new FarmPatch();
+        f.zoneId = FARM_ZONE;
         f.x = (FARM_BASE_TX + dx) * TILE + TILE / 2;
         f.y = (FARM_BASE_TY + dy) * TILE + TILE / 2;
         f.state = "empty";
@@ -164,6 +215,7 @@ export class WorldRoom extends Room<WorldState> {
     if (!patch || patch.state !== "empty") return;
     const p = this.state.players.get(client.sessionId);
     if (!p) return;
+    if (patch.zoneId !== p.zoneId) return;
     const dx = patch.x - p.x;
     const dy = patch.y - p.y;
     if (dx * dx + dy * dy > FARM_REACH_SQ) return;
@@ -186,6 +238,7 @@ export class WorldRoom extends Room<WorldState> {
     if (!patch || patch.state !== "grown") return;
     const p = this.state.players.get(client.sessionId);
     if (!p) return;
+    if (patch.zoneId !== p.zoneId) return;
     const dx = patch.x - p.x;
     const dy = patch.y - p.y;
     if (dx * dx + dy * dy > FARM_REACH_SQ) return;
@@ -201,6 +254,7 @@ export class WorldRoom extends Room<WorldState> {
     const rand = (lo: number, hi: number) => lo + Math.floor(Math.random() * (hi - lo + 1));
 
     const place = (
+      zoneId: string,
       rtype: string,
       tx: number,
       ty: number,
@@ -208,6 +262,7 @@ export class WorldRoom extends Room<WorldState> {
       scale: number,
     ) => {
       const h = new Harvestable();
+      h.zoneId = zoneId;
       h.rtype = rtype;
       h.x = tx * TILE + TILE / 2;
       h.y = ty * TILE + TILE / 2;
@@ -219,19 +274,21 @@ export class WorldRoom extends Room<WorldState> {
       this.state.harvestables.set(`h${counter++}`, h);
     };
 
-    // Logging zone (X 0..ZONE_FARM_X_MAX): trees only.
+    // 벌목장 — 나무만, 풍성하게.
+    const logging = ZONE_DEFS.logging;
     for (let i = 0; i < 80; i++) {
-      const tx = rand(1, ZONE_FARM_X_MAX);
-      const ty = rand(1, MAP_H - 2);
+      const tx = rand(1, logging.widthTiles - 2);
+      const ty = rand(1, logging.heightTiles - 2);
       const variant = TREE_FRAMES[rand(0, TREE_FRAMES.length - 1)];
-      place("tree", tx, ty, variant, 1.75);
+      place("logging", "tree", tx, ty, variant, 1.75);
     }
 
-    // Mine zone (X ZONE_VILLAGE_X_MAX+1..MAP_W-2): rocks + ores.
+    // 광산 — 돌 + 동/은/금.
+    const mine = ZONE_DEFS.mine;
     for (let i = 0; i < 25; i++) {
-      const tx = rand(ZONE_VILLAGE_X_MAX + 1, MAP_W - 2);
-      const ty = rand(1, MAP_H - 2);
-      place("rock", tx, ty, 11, 1);
+      const tx = rand(1, mine.widthTiles - 2);
+      const ty = rand(1, mine.heightTiles - 2);
+      place("mine", "rock", tx, ty, 11, 1);
     }
     const ores: Array<{ type: string; count: number }> = [
       { type: "copper_node", count: 12 },
@@ -240,9 +297,9 @@ export class WorldRoom extends Room<WorldState> {
     ];
     for (const ore of ores) {
       for (let i = 0; i < ore.count; i++) {
-        const tx = rand(ZONE_VILLAGE_X_MAX + 1, MAP_W - 2);
-        const ty = rand(1, MAP_H - 2);
-        place(ore.type, tx, ty, 0, 1);
+        const tx = rand(1, mine.widthTiles - 2);
+        const ty = rand(1, mine.heightTiles - 2);
+        place("mine", ore.type, tx, ty, 0, 1);
       }
     }
 
@@ -259,6 +316,7 @@ export class WorldRoom extends Room<WorldState> {
 
     const p = this.state.players.get(client.sessionId);
     if (!p) return;
+    if (h.zoneId !== p.zoneId) return;
     const dx = h.x - p.x;
     const dy = h.y - p.y;
     if (dx * dx + dy * dy > HARVEST_RANGE_SQ) return;
@@ -293,8 +351,10 @@ export class WorldRoom extends Room<WorldState> {
     const p = new Player();
     const requested = sanitize(options?.name ?? "").slice(0, MAX_NAME);
     p.name = requested || `Guest${client.sessionId.slice(0, 4)}`;
-    p.x = WORLD_W / 2 + (Math.random() - 0.5) * 96;
-    p.y = WORLD_H / 2 + (Math.random() - 0.5) * 96;
+    const village = ZONE_DEFS.village;
+    p.zoneId = "village";
+    p.x = (village.widthTiles / 2) * TILE + (Math.random() - 0.5) * 96;
+    p.y = (village.heightTiles / 2) * TILE + (Math.random() - 0.5) * 96;
     p.dir = 0;
 
     // Starter inventory + hotbar (20 slots not enforced server-side yet — just defaults).

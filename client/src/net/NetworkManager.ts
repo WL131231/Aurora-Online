@@ -6,9 +6,11 @@ export interface RemotePlayer {
   y: number;
   dir: number;
   moving: number;
+  zoneId: string;
 }
 
 export interface RemoteHarvestable {
+  zoneId: string;
   rtype: string;
   x: number;
   y: number;
@@ -20,6 +22,7 @@ export interface RemoteHarvestable {
 }
 
 export interface RemoteFarmPatch {
+  zoneId: string;
   x: number;
   y: number;
   state: string; // empty | planted | grown
@@ -197,6 +200,11 @@ export class NetworkManager {
   sendNpcGift(npcName: string, itemId: string) {
     if (!this.connected || !this.room) return;
     this.room.send("npc_gift", { npcName, itemId });
+  }
+
+  sendZoneMove(side: "west" | "east" | "north" | "south") {
+    if (!this.connected || !this.room) return;
+    this.room.send("zone_move", { side });
   }
 
   private subscribeOwnInventory(player: RemotePlayer) {
